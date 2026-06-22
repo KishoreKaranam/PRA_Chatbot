@@ -1,0 +1,56 @@
+# ── Python ──────────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.egg-info/
+*.egg
+dist/
+build/
+.eggs/
+*.so
+
+# Virtual environments
+venv/
+.venv/
+env/
+.env_venv/
+
+# ── Environment / secrets (NEVER commit) ────────────────────────────────────
+.env
+.env.local
+.env.*.local
+backend/.env
+
+# ── Logs ────────────────────────────────────────────────────────────────────
+*.log
+uvicorn.log
+logs/
+
+# ── Node / Frontend ──────────────────────────────────────────────────────────
+node_modules/
+pra-ui/node_modules/
+pra-ui/dist/
+pra-ui/.vite/
+dist/
+.cache/
+
+# ── IDE / Editor ─────────────────────────────────────────────────────────────
+.vscode/settings.json
+.idea/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# ── Testing / Coverage ───────────────────────────────────────────────────────
+.coverage
+htmlcov/
+.pytest_cache/
+*.xml
+
+# ── Misc ─────────────────────────────────────────────────────────────────────
+*.tmp
+*.bak
+*.orig
+.sixth/

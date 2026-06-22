@@ -1,0 +1,66 @@
+# GraphDB Connector
+# Name: pra_fts_connector
+# Type: Lucene full-text search connector for Payment Reference Architecture
+
+PREFIX luc: <http://www.ontotext.com/connectors/lucene#>
+PREFIX luc-index: <http://www.ontotext.com/connectors/lucene/instance#>
+
+# ── CREATE the Lucene FTS connector (run once in GraphDB SPARQL editor) ──────
+INSERT DATA {
+  luc-index:pra_connector luc:createConnector '''
+  {
+    "fields": [
+      {
+        "fieldName": "label",
+        "propertyChain": ["http://www.w3.org/2000/01/rdf-schema#label"],
+        "indexed": true,
+        "stored": true,
+        "analyzed": true,
+        "boost": 3.0
+      },
+      {
+        "fieldName": "description",
+        "propertyChain": ["http://purl.org/dc/terms/description"],
+        "indexed": true,
+        "stored": true,
+        "analyzed": true,
+        "boost": 2.0
+      },
+      {
+        "fieldName": "comment",
+        "propertyChain": ["http://www.w3.org/2000/01/rdf-schema#comment"],
+        "indexed": true,
+        "stored": true,
+        "analyzed": true,
+        "boost": 1.5
+      },
+      {
+        "fieldName": "altLabel",
+        "propertyChain": ["http://www.w3.org/2004/02/skos/core#altLabel"],
+        "indexed": true,
+        "stored": true,
+        "analyzed": true,
+        "boost": 2.0
+      },
+      {
+        "fieldName": "notes",
+        "propertyChain": ["https://example.org/pra#notes"],
+        "indexed": true,
+        "stored": true,
+        "analyzed": true,
+        "boost": 1.0
+      },
+      {
+        "fieldName": "rawText",
+        "propertyChain": ["https://example.org/pra#rawFunctionText"],
+        "indexed": true,
+        "stored": true,
+        "analyzed": true,
+        "boost": 1.0
+      }
+    ],
+    "types": ["https://example.org/pra#PRAElement"],
+    "languages": ["en", ""]
+  }
+  '''
+}

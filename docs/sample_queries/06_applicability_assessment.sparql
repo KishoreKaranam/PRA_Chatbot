@@ -1,0 +1,26 @@
+# Sample: ApplicabilityAssessment for a specific payment scheme
+
+PREFIX rdf:    <http://www.w3.org/1999/02/22-rdf-syntax-ns#>
+PREFIX rdfs:   <http://www.w3.org/2000/01/rdf-schema#>
+PREFIX pra:    <https://example.org/pra#>
+PREFIX dcterms: <http://purl.org/dc/terms/>
+
+CONSTRUCT {
+  ?func rdf:type pra:BusinessFunction .
+  ?func rdfs:label ?funcLabel .
+  ?aa rdf:type pra:ApplicabilityAssessment .
+  ?aa pra:forScheme ?scheme .
+  ?aa pra:hasStatus ?status .
+  ?scheme rdfs:label ?schemeLabel .
+  ?status rdfs:label ?statusLabel .
+}
+WHERE {
+  ?func a pra:BusinessFunction .
+  ?func pra:hasApplicabilityAssessment ?aa .
+  ?aa pra:forScheme ?scheme .
+  ?aa pra:hasStatus ?status .
+  OPTIONAL { ?func rdfs:label ?funcLabel }
+  OPTIONAL { ?scheme rdfs:label ?schemeLabel }
+  OPTIONAL { ?status rdfs:label ?statusLabel }
+}
+LIMIT 200

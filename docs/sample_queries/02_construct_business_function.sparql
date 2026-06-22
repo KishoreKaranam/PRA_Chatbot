@@ -1,0 +1,45 @@
+# Sample SPARQL CONSTRUCT – Fetch full subgraph for a BusinessFunction
+#
+# Replace "payment initiation" with any keyword from the label.
+# This returns: function → its layer → its activities → its purpose → governing rules
+
+PREFIX rdf:   <http://www.w3.org/1999/02/22-rdf-syntax-ns#>
+PREFIX rdfs:  <http://www.w3.org/2000/01/rdf-schema#>
+PREFIX owl:   <http://www.w3.org/2002/07/owl#>
+PREFIX pra:   <https://example.org/pra#>
+PREFIX prai:  <https://example.org/pra/instance/>
+PREFIX dcterms: <http://purl.org/dc/terms/>
+
+CONSTRUCT {
+  ?func rdf:type pra:BusinessFunction .
+  ?func rdfs:label ?label .
+  ?func dcterms:description ?desc .
+  ?func pra:modellingStatus ?status .
+  ?func pra:hasLayer ?layer .
+  ?func pra:hasActivity ?activity .
+  ?func pra:hasPurposeStatement ?purpose .
+  ?func pra:governedBy ?rule .
+  ?func pra:applicableToScheme ?scheme .
+  ?func pra:hasApplicabilityAssessment ?aa .
+  ?layer rdfs:label ?layerLabel .
+  ?activity rdfs:label ?actLabel .
+  ?activity dcterms:description ?actDesc .
+  ?purpose rdfs:label ?purposeLabel .
+  ?rule rdfs:label ?ruleLabel .
+  ?aa pra:hasStatus ?aaStatus .
+  ?aa pra:forScheme ?aaScheme .
+}
+WHERE {
+  ?func a pra:BusinessFunction .
+  OPTIONAL { ?func rdfs:label ?label }
+  OPTIONAL { ?func dcterms:description ?desc }
+  OPTIONAL { ?func pra:modellingStatus ?status }
+  OPTIONAL { ?func pra:hasLayer ?layer . ?layer rdfs:label ?layerLabel }
+  OPTIONAL { ?func pra:hasActivity ?activity . ?activity rdfs:label ?actLabel . OPTIONAL { ?activity dcterms:description ?actDesc } }
+  OPTIONAL { ?func pra:hasPurposeStatement ?purpose . ?purpose rdfs:label ?purposeLabel }
+  OPTIONAL { ?func pra:governedBy ?rule . ?rule rdfs:label ?ruleLabel }
+  OPTIONAL { ?func pra:applicableToScheme ?scheme }
+  OPTIONAL { ?func pra:hasApplicabilityAssessment ?aa . ?aa pra:hasStatus ?aaStatus . OPTIONAL { ?aa pra:forScheme ?aaScheme } }
+  FILTER(REGEX(STR(?label), "payment initiation", "i"))
+}
+LIMIT 500

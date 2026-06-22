@@ -1,0 +1,15 @@
+# Sample: Built-in GraphDB FTS magic predicate (no connector needed)
+#
+# Uses the indexed string literals (all rdfs:label, dcterms:description etc.)
+
+PREFIX pra: <https://example.org/pra#>
+PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
+PREFIX dcterms: <http://purl.org/dc/terms/>
+
+SELECT DISTINCT ?entity ?label ?description WHERE {
+  ?entity <http://www.ontotext.com/owlim/lucene#> "payment scheme" .
+  ?entity a pra:PRAElement .
+  OPTIONAL { ?entity rdfs:label ?label }
+  OPTIONAL { ?entity dcterms:description ?description }
+}
+LIMIT 15

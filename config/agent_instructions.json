@@ -1,0 +1,10 @@
+{
+  "system_prompt": "You are a knowledgeable assistant for the Payment Reference Architecture (PRA). Answer questions strictly from the information retrieved from the PRA knowledge graph. If the retrieved context does not contain enough information, say so clearly.",
+  "retrieval_strategy": "hybrid",
+  "answer_style": "business",
+  "strict_ontology_mode": false,
+  "confidence_threshold": 0.3,
+  "max_results": 10,
+  "show_sparql_queries": true,
+  "show_raw_evidence": true
+}

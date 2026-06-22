@@ -1,0 +1,39 @@
+# Sample: Ontology class hierarchy CONSTRUCT
+#
+# Returns the full ontology schema: classes, subclasses, and properties
+
+PREFIX rdf:  <http://www.w3.org/1999/02/22-rdf-syntax-ns#>
+PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
+PREFIX owl:  <http://www.w3.org/2002/07/owl#>
+PREFIX pra:  <https://example.org/pra#>
+
+CONSTRUCT {
+  ?cls rdf:type owl:Class .
+  ?cls rdfs:label ?label .
+  ?cls rdfs:comment ?comment .
+  ?cls rdfs:subClassOf ?parent .
+  ?prop rdf:type ?propType .
+  ?prop rdfs:label ?propLabel .
+  ?prop rdfs:domain ?domain .
+  ?prop rdfs:range ?range .
+  ?prop rdfs:comment ?propComment .
+}
+WHERE {
+  {
+    ?cls a owl:Class .
+    FILTER(STRSTARTS(STR(?cls), STR(pra:)))
+    OPTIONAL { ?cls rdfs:label ?label }
+    OPTIONAL { ?cls rdfs:comment ?comment }
+    OPTIONAL { ?cls rdfs:subClassOf ?parent }
+  }
+  UNION
+  {
+    ?prop a ?propType .
+    FILTER(?propType IN (owl:ObjectProperty, owl:DatatypeProperty))
+    FILTER(STRSTARTS(STR(?prop), STR(pra:)))
+    OPTIONAL { ?prop rdfs:label ?propLabel }
+    OPTIONAL { ?prop rdfs:comment ?propComment }
+    OPTIONAL { ?prop rdfs:domain ?domain }
+    OPTIONAL { ?prop rdfs:range ?range }
+  }
+}

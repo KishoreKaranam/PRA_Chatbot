@@ -1,0 +1,32 @@
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+:root {
+  --bg: #f0f2f5;
+  --sidebar-bg: #1a1f2e;
+  --sidebar-border: #2d3548;
+  --sidebar-text: #cdd6f4;
+  --sidebar-muted: #6c7086;
+  --accent: #4f86f7;
+  --accent-dark: #1a56db;
+  --surface: #ffffff;
+  --border: #e5e7eb;
+  --text: #1e1e2e;
+  --text-muted: #6b7280;
+  --danger: #f87171;
+  --success: #4ade80;
+  --warning: #facc15;
+  --radius: 12px;
+}
+
+html, body, #root { height: 100%; font-family: 'Inter', system-ui, sans-serif; }
+body { background: var(--bg); color: var(--text); }
+
+::-webkit-scrollbar { width: 6px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: #c4c4c4; border-radius: 3px; }
+
+@keyframes fadeUp {
+  from { opacity: 0; transform: translateY(8px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+@keyframes spin { to { transform: rotate(360deg); } }
