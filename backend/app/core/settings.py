@@ -10,22 +10,35 @@ class Settings(BaseSettings):
         extra="ignore",
     )
 
-    # GraphDB
+    # Graph backend: "graphdb" (requires running GraphDB) or "rdflib" (in-memory, loads TTL files)
+    graph_backend: str = "graphdb"
+    ttl_file_path: str = ""  # Path to .ttl file or directory (used when graph_backend=rdflib)
+
+    # GraphDB (only used when graph_backend=graphdb)
     graphdb_base_url: str = "http://localhost:7200"
     graphdb_repository: str = "Payment_Reference_Architecture"
     graphdb_username: str = ""
     graphdb_password: str = ""
+
+    # LLM Provider: "openai" | "azure" | "anthropic"
+    llm_provider: str = "anthropic"
 
     # LLM – standard OpenAI
     openai_api_key: str = ""
     openai_model: str = "gpt-4o"
     openai_base_url: str = "https://api.openai.com/v1"
 
-    # LLM – Azure OpenAI (takes priority when endpoint is set)
+    # LLM – Azure OpenAI (used when llm_provider=azure)
+    azure_openai_api_key: str = ""           # separate key for Azure OpenAI
     azure_openai_endpoint: str = ""          # e.g. https://MY-RESOURCE.openai.azure.com
     azure_openai_api_version: str = "2025-01-01-preview"
     azure_openai_deployment: str = ""        # deployment name (= model alias in Azure)
     azure_openai_embedding_deployment: str = ""  # embedding deployment name in Azure
+
+    # LLM – Anthropic Claude (used when llm_provider=anthropic)
+    anthropic_api_key: str = ""
+    anthropic_model: str = "claude-sonnet-4-6"
+    anthropic_max_tokens: int = 8096
 
     # Embeddings
     embedding_model: str = "text-embedding-3-large"

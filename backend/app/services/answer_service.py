@@ -2,11 +2,14 @@
 Answer generation service.
 
 Takes structured evidence from the retrieval layer and calls an
-OpenAI-compatible LLM to generate a grounded, cited answer.
+LLM (OpenAI, Azure OpenAI, or Anthropic Claude) to generate a grounded, cited answer.
+Supports both full-response and streaming modes.
 """
 from __future__ import annotations
 
+from typing import AsyncGenerator
 from openai import AsyncOpenAI, AsyncAzureOpenAI
+import anthropic
 
 from app.models.schemas import (
     AgentInstructions,
@@ -44,23 +47,33 @@ class AnswerGenerationService:
 
     def __init__(self) -> None:
         settings = get_settings()
+        self._provider = settings.llm_provider.lower()
 
-        if settings.azure_openai_endpoint:
+        if self._provider == "anthropic":
+            # ── Anthropic Claude ──────────────────────────────────────────────
+            self._anthropic_client = anthropic.AsyncAnthropic(
+                api_key=settings.anthropic_api_key,
+            )
+            self._model = settings.anthropic_model
+            self._max_tokens = settings.anthropic_max_tokens
+            self._client = None
+            logger.info("llm_backend", backend="anthropic", model=self._model)
+
+        elif self._provider == "azure":
             # ── Azure OpenAI ──────────────────────────────────────────────────
             self._client = AsyncAzureOpenAI(
-                api_key=settings.openai_api_key,
+                api_key=settings.azure_openai_api_key or settings.openai_api_key,
                 azure_endpoint=settings.azure_openai_endpoint,
                 api_version=settings.azure_openai_api_version,
             )
-            # In Azure the "model" param to chat.completions.create must be the
-            # deployment name, not the underlying model name.
             self._model = settings.azure_openai_deployment or settings.openai_model
+            self._anthropic_client = None
+            self._max_tokens = 8000
             logger.info(
                 "llm_backend",
                 backend="azure",
                 endpoint=settings.azure_openai_endpoint,
                 deployment=self._model,
-                api_version=settings.azure_openai_api_version,
             )
         else:
             # ── Standard OpenAI (or any OpenAI-compatible endpoint) ───────────
@@ -69,6 +82,8 @@ class AnswerGenerationService:
                 base_url=settings.openai_base_url,
             )
             self._model = settings.openai_model
+            self._anthropic_client = None
+            self._max_tokens = 8000
             logger.info("llm_backend", backend="openai", model=self._model)
 
     async def generate(
@@ -105,17 +120,91 @@ class AnswerGenerationService:
         system_prompt = self._build_system_prompt(instructions)
         user_message = self._build_user_message(question, context, modes_used)
 
-        logger.info("llm_call", model=self._model, modes=modes_used)
-        response = await self._client.chat.completions.create(
-            model=self._model,
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_message},
-            ],
-            max_completion_tokens=8000,  # reasoning models use tokens internally; needs headroom
-        )
-        answer = response.choices[0].message.content or ""
+        logger.info("llm_call", model=self._model, modes=modes_used, provider=self._provider)
+
+        if self._provider == "anthropic":
+            # ── Anthropic Claude API ──────────────────────────────────────────
+            response = await self._anthropic_client.messages.create(
+                model=self._model,
+                max_tokens=self._max_tokens,
+                system=system_prompt,
+                messages=[
+                    {"role": "user", "content": user_message},
+                ],
+            )
+            answer = response.content[0].text if response.content else ""
+        else:
+            # ── OpenAI / Azure OpenAI API ─────────────────────────────────────
+            response = await self._client.chat.completions.create(
+                model=self._model,
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_message},
+                ],
+                max_completion_tokens=self._max_tokens,
+            )
+            answer = response.choices[0].message.content or ""
+
         return answer.strip(), confidence
+
+    async def generate_stream(
+        self,
+        question: str,
+        evidence: list,
+        modes_used: list[str],
+        instructions: AgentInstructions,
+    ) -> AsyncGenerator[str, None]:
+        """
+        Stream answer tokens as they are generated.
+        Yields individual text chunks from the LLM.
+        """
+        context = self._build_context(evidence, instructions)
+        confidence = self._estimate_confidence(evidence, modes_used)
+
+        if not context.strip():
+            if instructions.strict_ontology_mode:
+                yield (
+                    "No relevant information was found in the Payment Reference "
+                    "Architecture knowledge graph for your question."
+                )
+                return
+            context = "(No specific graph evidence retrieved; answering from general PRA knowledge.)"
+
+        if confidence < instructions.confidence_threshold and instructions.strict_ontology_mode:
+            yield (
+                f"The evidence retrieved (confidence {confidence:.0%}) falls below "
+                f"the configured threshold ({instructions.confidence_threshold:.0%}). "
+                "Please rephrase your question or lower the confidence threshold."
+            )
+            return
+
+        system_prompt = self._build_system_prompt(instructions)
+        user_message = self._build_user_message(question, context, modes_used)
+
+        logger.info("llm_stream_call", model=self._model, modes=modes_used, provider=self._provider)
+
+        if self._provider == "anthropic":
+            async with self._anthropic_client.messages.stream(
+                model=self._model,
+                max_tokens=self._max_tokens,
+                system=system_prompt,
+                messages=[{"role": "user", "content": user_message}],
+            ) as stream:
+                async for text in stream.text_stream:
+                    yield text
+        else:
+            response = await self._client.chat.completions.create(
+                model=self._model,
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_message},
+                ],
+                max_completion_tokens=self._max_tokens,
+                stream=True,
+            )
+            async for chunk in response:
+                if chunk.choices and chunk.choices[0].delta.content:
+                    yield chunk.choices[0].delta.content
 
     # ── Context builder ───────────────────────────────────────────────────────
 

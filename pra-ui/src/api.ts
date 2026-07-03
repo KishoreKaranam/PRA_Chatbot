@@ -46,8 +46,8 @@ export interface ChatResponse {
   answer: string;
   retrieval_modes_used: string[];
   evidence: Evidence[];
-  confidence: number;
-  warning?: string;
+  confidence: number | null;
+  warning?: string | null;
 }
 
 export interface Instructions {
@@ -64,9 +64,9 @@ export interface Instructions {
 
 export interface HealthResponse {
   status: string;
-  graphdb_connected: boolean;
-  repository: string;
-  graphdb_url: string;
+  graph_ready: boolean;
+  graph_backend: string;
+  triple_count: number;
 }
 
 // ── API calls ─────────────────────────────────────────────────────────────────
@@ -112,6 +112,77 @@ export async function sendQuestion(question: string, instructions: Instructions)
     throw new Error(`Backend error ${r.status}: ${text.slice(0, 200)}`);
   }
   return r.json();
+}
+
+export interface StreamCallbacks {
+  onRetrieval: (data: { retrieval_modes_used: string[]; evidence: unknown[]; warning?: string | null }) => void;
+  onToken: (text: string) => void;
+  onDone: (data: { confidence: number | null }) => void;
+  onError: (error: string) => void;
+}
+
+export async function sendQuestionStream(
+  question: string,
+  instructions: Instructions,
+  callbacks: StreamCallbacks,
+): Promise<void> {
+  const r = await fetch(`${BASE}/chat/stream`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ question, agent_instructions: instructions }),
+  });
+
+  if (!r.ok) {
+    const text = await r.text();
+    callbacks.onError(`Backend error ${r.status}: ${text.slice(0, 200)}`);
+    return;
+  }
+
+  const reader = r.body?.getReader();
+  if (!reader) { callbacks.onError('No response body'); return; }
+
+  const decoder = new TextDecoder();
+  let buffer = '';
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+
+    buffer += decoder.decode(value, { stream: true });
+
+    // SSE messages are separated by double newline
+    let boundary: number;
+    while ((boundary = buffer.indexOf('\n\n')) !== -1) {
+      const rawMessage = buffer.slice(0, boundary);
+      buffer = buffer.slice(boundary + 2);
+
+      let eventType = '';
+      let dataStr = '';
+
+      for (const line of rawMessage.split('\n')) {
+        const trimmed = line.replace(/\r$/, ''); // handle \r\n
+        if (trimmed.startsWith('event: ')) {
+          eventType = trimmed.slice(7).trim();
+        } else if (trimmed.startsWith('data: ')) {
+          dataStr = trimmed.slice(6);
+        }
+      }
+
+      if (!eventType || !dataStr) continue;
+
+      try {
+        const data = JSON.parse(dataStr);
+        switch (eventType) {
+          case 'retrieval': callbacks.onRetrieval(data); break;
+          case 'token':     callbacks.onToken(data.text); break;
+          case 'done':      callbacks.onDone(data); break;
+          case 'error':     callbacks.onError(data.detail); break;
+        }
+      } catch {
+        // skip malformed JSON
+      }
+    }
+  }
 }
 
 export function shortenUri(uri: string, max = 55): string {

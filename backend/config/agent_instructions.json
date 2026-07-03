@@ -5,7 +5,7 @@
   "strict_ontology_mode": false,
   "confidence_threshold": 1.0,
   "max_results": 100,
-  "max_triples": 500,
+  "max_triples": 1050,
   "show_sparql_queries": false,
-  "show_raw_evidence": true
+  "show_raw_evidence": false
 }

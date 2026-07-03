@@ -106,9 +106,9 @@ SELECT ?entity ?label ?desc WHERE {
 
         # Build the right OpenAI client (Azure or standard)
         s = self._settings
-        if s.azure_openai_endpoint:
+        if s.azure_openai_endpoint and s.azure_openai_api_key:
             openai_client = AsyncAzureOpenAI(
-                api_key=s.openai_api_key,
+                api_key=s.azure_openai_api_key,
                 azure_endpoint=s.azure_openai_endpoint,
                 api_version=s.azure_openai_api_version,
             )

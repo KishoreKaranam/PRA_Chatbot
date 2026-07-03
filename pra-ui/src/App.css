@@ -1,1 +1,17 @@
-/* intentionally empty */
+.sidebar-toggle-btn {
+  width: 32px;
+  height: 32px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border);
+  background: var(--surface);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-secondary);
+  transition: background 0.15s, color 0.15s;
+}
+.sidebar-toggle-btn:hover {
+  background: var(--surface-sunken);
+  color: var(--text);
+}

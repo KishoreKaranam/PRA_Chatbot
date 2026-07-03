@@ -14,6 +14,7 @@ from __future__ import annotations
 import httpx
 from tenacity import retry, stop_after_attempt, wait_exponential
 
+from app.graphdb.base import GraphBackend
 from app.core.settings import get_settings
 from app.core.log_config import get_logger
 
@@ -38,7 +39,7 @@ PREFIX luc-index: <http://www.ontotext.com/connectors/lucene/instance#>
 """
 
 
-class GraphDBClient:
+class GraphDBClient(GraphBackend):
     """Thread-safe, async SPARQL client for one GraphDB repository."""
 
     def __init__(self) -> None:
@@ -176,11 +177,32 @@ def _split_ntriples_line(line: str) -> list[str]:
 
 
 # ── Singleton accessor ────────────────────────────────────────────────────────
-_client_instance: GraphDBClient | None = None
+_client_instance: GraphBackend | None = None
 
 
-def get_graphdb_client() -> GraphDBClient:
+def get_graphdb_client() -> GraphBackend:
+    """
+    Return the configured graph backend (singleton).
+
+    - GRAPH_BACKEND=graphdb → GraphDBClient (HTTP to running GraphDB)
+    - GRAPH_BACKEND=rdflib  → RDFLibClient  (in-memory, loads TTL files)
+    """
     global _client_instance
     if _client_instance is None:
-        _client_instance = GraphDBClient()
+        settings = get_settings()
+        backend = settings.graph_backend.lower()
+
+        if backend == "rdflib":
+            from app.graphdb.rdflib_client import RDFLibClient
+            if not settings.ttl_file_path:
+                raise ValueError(
+                    "GRAPH_BACKEND=rdflib but TTL_FILE_PATH is not set. "
+                    "Point it to a .ttl file or directory."
+                )
+            _client_instance = RDFLibClient(settings.ttl_file_path)
+            logger.info("graph_backend_init", backend="rdflib", path=settings.ttl_file_path)
+        else:
+            _client_instance = GraphDBClient()
+            logger.info("graph_backend_init", backend="graphdb")
+
     return _client_instance
