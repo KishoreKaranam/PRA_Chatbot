@@ -327,6 +327,58 @@ Function ──DEPENDS_ON_SUPPORTING──► SupportingDomain
 SupportingDomain ──SUPPORTS_SCHEME──► PaymentScheme
 ```
 
+### Required Neo4j Indexes
+
+After importing the PRA data, create the indexes below in Neo4j Browser (or
+run them through a Neo4j Cypher client). The application is configured with
+`FTS_BACKEND=neo4j` and `VECTOR_BACKEND=neo4j`, so both indexes are required
+for the configured retrieval paths.
+
+#### Full-text index
+
+```cypher
+CREATE FULLTEXT INDEX pra_fulltext IF NOT EXISTS
+FOR (n:Function|Domain|SupportingDomain|Rule|PaymentScheme|Phase|Purpose|PreCondition|PostCondition|Input|Output|PRA)
+ON EACH [n.name, n.description, n.comment];
+```
+
+The full-text index is used by `db.index.fulltext.queryNodes()` for keyword
+search. The application has a `CONTAINS` fallback, but creating this index is
+recommended for complete and efficient FTS retrieval.
+
+#### Vector index
+
+```cypher
+CREATE VECTOR INDEX pra_embedding_index IF NOT EXISTS
+FOR (n:Function|Domain|SupportingDomain|Rule|PaymentScheme|Phase|Purpose|PreCondition|PostCondition|Input|Output|PRA)
+ON (n.embedding)
+OPTIONS {
+  indexConfig: {
+    `vector.dimensions`: 3072,
+    `vector.similarity_function`: 'cosine'
+  }
+};
+```
+
+The vector index requires 3072-dimensional `embedding` properties on the PRA
+nodes. Backfill those embeddings after creating the index:
+
+```powershell
+cd backend
+.\venv\Scripts\python.exe ..\scripts\neo4j\backfill_embeddings.py --write
+```
+
+Verify that both indexes are online before starting the backend:
+
+```cypher
+SHOW INDEXES
+YIELD name, type, state
+WHERE name IN ['pra_fulltext', 'pra_embedding_index']
+RETURN name, type, state;
+```
+
+Both indexes should have state `ONLINE`.
+
 ---
 
 ## Retrieval Modes
@@ -335,12 +387,16 @@ SupportingDomain ──SUPPORTS_SCHEME──► PaymentScheme
 Traverses the graph using Cypher. Resolves named PRA entities from the question and follows relationships.
 Best for: **"What are the functions in Payment Initiation?"**, **"What rules govern X?"**
 
-### Full-Text Search (CONTAINS)
-Keyword matching on `name` and `description` using Neo4j `CONTAINS`. Falls back gracefully when Lucene FTS index (`pra_fulltext`) is absent from the dump.
+### Full-Text Search (Neo4j FTS)
+Keyword matching on `name`, `description`, and `comment` using the Neo4j
+Lucene full-text index `pra_fulltext`. If the index is unavailable, the
+application falls back to a slower `CONTAINS` search.
 Best for: **"List functions related to fraud"**, **"Find rules for KYC"**
 
-### Vector Similarity — Azure OpenAI + NumPy (active)
-315 nodes embedded at startup via Azure `text-embedding-3-large` (3072 dimensions). Cosine similarity at query time. No Neo4j index required.
+### Vector Similarity — Neo4j native vector search (active)
+The question is embedded with Azure OpenAI and searched against the Neo4j
+`pra_embedding_index` using cosine similarity. The index must exist, be
+`ONLINE`, and contain 3072-dimensional `embedding` properties.
 Best for: **"Something about monitoring payments in real time"** (fuzzy / conceptual)
 
 ### Hybrid (default)
@@ -397,28 +453,14 @@ On every backend start:
 
 ---
 
-## Optional — Enable Neo4j Native Vector Index
+## Enable Neo4j Native Vector Search
 
-```cypher
--- 1. Create index in Neo4j Browser:
-CREATE VECTOR INDEX pra_embedding_index
-FOR (n:Function|Domain|SupportingDomain|Rule|PaymentScheme|Phase|Purpose|PreCondition|PostCondition|Input|Output|PRA)
-ON (n.embedding)
-OPTIONS { indexConfig: { `vector.dimensions`: 3072, `vector.similarity_function`: 'cosine' } }
-```
-
-The vector service searches these PRA labels directly; it does not require a
-shared `Resource` label. Nodes must have an `embedding` property before they
-can be returned by vector search.
-
-```powershell
-# 2. Backfill embeddings into Neo4j nodes:
-cd backend
-.\venv\Scripts\python.exe ..\scripts\neo4j\backfill_embeddings.py --write
-```
+The required full-text and vector index creation statements, embedding
+backfill command, and verification query are documented in
+[Required Neo4j Indexes](#required-neo4j-indexes). Set the vector backend to
+Neo4j in `backend/.env`:
 
 ```env
-# 3. Switch in backend/.env:
 VECTOR_BACKEND=neo4j
 ```
 
