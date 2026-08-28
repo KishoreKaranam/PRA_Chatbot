@@ -1,13 +1,12 @@
 ﻿import { useState } from "react";
 import { ChevronDown, ChevronRight, Database, Search, Brain } from "lucide-react";
-import type { Evidence, SparqlEvidence, FtsEvidence, SimilarityEvidence } from "../api";
+import type { Evidence, SparqlEvidence, FtsEvidence, SimilarityEvidence, Neo4jGraphEvidence } from "../api";
 import { shortenUri } from "../api";
 
-interface Props { evidence: Evidence[]; showSparql: boolean; }
+interface Props { evidence: Evidence[]; showQueries: boolean; }
 
-export function EvidencePanel({ evidence, showSparql }: Props) {
+export function EvidencePanel({ evidence, showQueries }: Props) {
   const [open, setOpen] = useState(false);
-  const [activeTab, setActiveTab] = useState(0);
 
   if (!evidence || evidence.length === 0) return null;
 
@@ -19,34 +18,82 @@ export function EvidencePanel({ evidence, showSparql }: Props) {
       </button>
       {open && (
         <div className="evidence-body">
-          <div className="evidence-tabs">
-            {evidence.map((ev, i) => (
-              <button key={i} className={`evidence-tab ${activeTab === i ? "evidence-tab--active" : ""}`} onClick={() => setActiveTab(i)}>
-                {ev.mode === "sparql" && <><Database size={11} /> SPARQL</>}
-                {ev.mode === "fts" && <><Search size={11} /> FTS</>}
-                {ev.mode === "similarity" && <><Brain size={11} /> Similarity</>}
-              </button>
-            ))}
-          </div>
-          <div className="evidence-content">
-            <EvidenceBlock ev={evidence[activeTab]} showSparql={showSparql} />
-          </div>
+          {evidence.map((ev, i) => (
+            <details key={i} className="evidence-source" open>
+              <summary className="evidence-source__summary">
+                {ev.mode === "sparql" && <><Database size={12} /> SPARQL / Neo4j</>}
+                {ev.mode === "fts" && <><Search size={12} /> Full-text search</>}
+                {ev.mode === "similarity" && <><Brain size={12} /> Semantic similarity</>}
+              </summary>
+              <div className="evidence-content">
+                <EvidenceBlock ev={ev} showQueries={showQueries} />
+              </div>
+            </details>
+          ))}
         </div>
       )}
     </div>
   );
 }
 
-function EvidenceBlock({ ev, showSparql }: { ev: Evidence; showSparql: boolean }) {
-  if (ev.mode === "sparql") return <SparqlBlock ev={ev as SparqlEvidence} showSparql={showSparql} />;
+function EvidenceBlock({ ev, showQueries }: { ev: Evidence; showQueries: boolean }) {
+  if (ev.mode === "neo4j") return <Neo4jBlock ev={ev as Neo4jGraphEvidence} showQueries={showQueries} />;
+  if (ev.mode === "sparql") return <SparqlBlock ev={ev as SparqlEvidence} showQueries={showQueries} />;
   if (ev.mode === "fts") return <FtsBlock ev={ev as FtsEvidence} />;
-  return <SimilarityBlock ev={ev as SimilarityEvidence} />;
+  if (ev.mode === "similarity") return <SimilarityBlock ev={ev as SimilarityEvidence} />;
+  return <div style={{ fontSize: 12, color: "var(--text-muted)" }}>Unsupported evidence source.</div>;
 }
 
-function SparqlBlock({ ev, showSparql }: { ev: SparqlEvidence; showSparql: boolean }) {
+function Neo4jBlock({ ev, showQueries }: { ev: Neo4jGraphEvidence; showQueries: boolean }) {
   return (
     <>
-      {showSparql && ev.query && (
+      {showQueries && ev.query && (
+        <div style={{ fontSize: 11, color: "var(--text-muted)", marginBottom: 4, fontWeight: 600 }}>Cypher query</div>
+      )}
+      {showQueries && ev.query && (
+        <pre style={{ background: "var(--surface-code)", color: "#e2e8f0", borderRadius: "var(--radius-sm)", padding: "10px 12px", fontSize: 11, overflowX: "auto", marginBottom: 10, whiteSpace: "pre-wrap", wordBreak: "break-all" }}>
+          {ev.query.trim()}
+        </pre>
+      )}
+      <div style={{ fontSize: 12, color: "var(--text-muted)", marginBottom: 8, fontWeight: 600 }}>
+        {ev.result_count} graph results · {ev.relationships.length} relationships
+      </div>
+      {ev.results.slice(0, 30).map((node, i) => {
+        const name = node.properties?.name ?? node.properties?.label ?? node.element_id;
+        const description = node.properties?.description;
+        return (
+          <div key={node.element_id || i} className="fts-hit">
+            <div className="fts-hit__title">
+              {String(name)} <span className="fts-hit__score">({node.labels.join(", ")})</span>
+            </div>
+            {description != null && <div className="fts-hit__snippet">{String(description).slice(0, 250)}</div>}
+          </div>
+        );
+      })}
+      {ev.results.length > 30 && <div style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 6 }}>... and {ev.results.length - 30} more nodes</div>}
+      {ev.relationships.length > 0 && (
+        <div style={{ marginTop: 10, fontSize: 12 }}>
+          <strong>Relationships</strong>
+          {ev.relationships.slice(0, 30).map((relationship, i) => (
+            <div key={relationship.element_id || i} className="triple-row">
+              <span className="triple-row__s">{relationship.start_node}</span>
+              <span className="triple-row__p">{relationship.type}</span>
+              <span className="triple-row__o">{relationship.end_node}</span>
+            </div>
+          ))}
+        </div>
+      )}
+    </>
+  );
+}
+
+function SparqlBlock({ ev, showQueries }: { ev: SparqlEvidence; showQueries: boolean }) {
+  return (
+    <>
+      {showQueries && ev.query && (
+        <div style={{ fontSize: 11, color: "var(--text-muted)", marginBottom: 4, fontWeight: 600 }}>SPARQL query</div>
+      )}
+      {showQueries && ev.query && (
         <pre style={{ background: "var(--surface-code)", color: "#e2e8f0", borderRadius: "var(--radius-sm)", padding: "10px 12px", fontSize: 11, overflowX: "auto", marginBottom: 10, whiteSpace: "pre-wrap", wordBreak: "break-all" }}>
           {ev.query.trim()}
         </pre>

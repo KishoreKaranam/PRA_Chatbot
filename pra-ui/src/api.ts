@@ -39,15 +39,47 @@ export interface SimilarityEvidence {
   note?: string;
 }
 
-export type Evidence = SparqlEvidence | FtsEvidence | SimilarityEvidence;
+export interface Neo4jNode {
+  element_id: string;
+  labels: string[];
+  properties: Record<string, unknown>;
+}
+
+export interface Neo4jRelationship {
+  element_id: string;
+  type: string;
+  start_node: string;
+  end_node: string;
+  properties: Record<string, unknown>;
+}
+
+export interface Neo4jGraphEvidence {
+  mode: 'neo4j';
+  query: string;
+  results: Neo4jNode[];
+  relationships: Neo4jRelationship[];
+  result_count: number;
+}
+
+export type Evidence = SparqlEvidence | FtsEvidence | SimilarityEvidence | Neo4jGraphEvidence;
 
 export interface ChatResponse {
   question: string;
+  rewritten_question: string;
+  is_followup: boolean;
+  intent: string;
   answer: string;
   retrieval_modes_used: string[];
   evidence: Evidence[];
   confidence: number | null;
   warning?: string | null;
+  clarification_needed?: string | null;
+  session_id?: string | null;   // echoed back from backend
+}
+
+export interface ConversationTurn {
+  role: 'user' | 'assistant';
+  content: string;
 }
 
 export interface Instructions {
@@ -66,7 +98,10 @@ export interface HealthResponse {
   status: string;
   graph_ready: boolean;
   graph_backend: string;
-  triple_count: number;
+  graph_backend_label: string;
+  node_count: number;
+  neo4j_uri?: string;
+  error?: string;
 }
 
 // ── API calls ─────────────────────────────────────────────────────────────────
@@ -115,21 +150,54 @@ export async function sendQuestion(question: string, instructions: Instructions)
 }
 
 export interface StreamCallbacks {
+  onPipeline: (data: { rewritten_question: string; is_followup: boolean; intent: string }) => void;
+  onClarification: (message: string) => void;
   onRetrieval: (data: { retrieval_modes_used: string[]; evidence: unknown[]; warning?: string | null }) => void;
   onToken: (text: string) => void;
-  onDone: (data: { confidence: number | null }) => void;
+  onDone: (data: { confidence: number | null; session_id: string | null }) => void;
   onError: (error: string) => void;
+}
+
+// ── Session management ─────────────────────────────────────────────────────────
+
+export interface CreateSessionResponse {
+  session_id: string;
+  message: string;
+}
+
+/**
+ * Create a new conversation session on the backend.
+ * Returns a session_id UUID string that should be stored in localStorage
+ * and sent with every subsequent sendQuestionStream() call.
+ */
+export async function createSession(userId?: string): Promise<string> {
+  const r = await fetch(`${BASE}/session`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ user_id: userId ?? null }),
+  });
+  if (!r.ok) {
+    const text = await r.text();
+    throw new Error(`Failed to create session: ${r.status} ${text.slice(0, 200)}`);
+  }
+  const data: CreateSessionResponse = await r.json();
+  return data.session_id;
 }
 
 export async function sendQuestionStream(
   question: string,
   instructions: Instructions,
   callbacks: StreamCallbacks,
+  sessionId: string | null = null,   // replaces conversationHistory
 ): Promise<void> {
   const r = await fetch(`${BASE}/chat/stream`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ question, agent_instructions: instructions }),
+    body: JSON.stringify({
+      question,
+      session_id: sessionId,
+      agent_instructions: instructions,
+    }),
   });
 
   if (!r.ok) {
@@ -173,10 +241,12 @@ export async function sendQuestionStream(
       try {
         const data = JSON.parse(dataStr);
         switch (eventType) {
-          case 'retrieval': callbacks.onRetrieval(data); break;
-          case 'token':     callbacks.onToken(data.text); break;
-          case 'done':      callbacks.onDone(data); break;
-          case 'error':     callbacks.onError(data.detail); break;
+          case 'pipeline':      callbacks.onPipeline(data); break;
+          case 'clarification': callbacks.onClarification(data.message); break;
+          case 'retrieval':     callbacks.onRetrieval(data); break;
+          case 'token':         callbacks.onToken(data.text); break;
+          case 'done':          callbacks.onDone(data); break;
+          case 'error':         callbacks.onError(data.detail); break;
         }
       } catch {
         // skip malformed JSON

@@ -1,0 +1,1 @@
+"""SPARQL retrieval implementation."""

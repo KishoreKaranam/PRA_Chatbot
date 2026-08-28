@@ -12,3 +12,4 @@ numpy>=1.26.4
 scikit-learn>=1.4.2
 tiktoken>=0.7.0
 rdflib>=7.0.0
+neo4j==6.2.0
