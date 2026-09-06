@@ -127,7 +127,7 @@ export function Sidebar({ instructions, onInstructionsChange, collapsed }: Props
             </label>
 
             <label className="settings-toggle-row">
-              <span>Show SPARQL Queries</span>
+              <span>Show Cypher Queries</span>
               <input type="checkbox" className="toggle-switch" checked={draft.show_sparql_queries ?? true} onChange={(e) => updateDraft({ show_sparql_queries: e.target.checked })} />
             </label>
 

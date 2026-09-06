@@ -8,9 +8,15 @@ export default defineConfig({
     port: 5173,
     proxy: {
       '/api': {
-        target: 'http://localhost:8001',
+        target: 'http://localhost:8000',
         changeOrigin: true,
+        // Required for SSE (Server-Sent Events) streaming to work through Vite proxy
+        headers: {
+          'Connection': 'keep-alive',
+          'Cache-Control': 'no-cache',
+        },
       },
     },
   },
 })
+

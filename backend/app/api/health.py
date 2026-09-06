@@ -1,6 +1,5 @@
 """Health-check endpoint."""
 from fastapi import APIRouter
-from app.graphdb.client import get_graphdb_client
 from app.core.settings import get_settings
 
 router = APIRouter()
@@ -10,19 +9,27 @@ router = APIRouter()
 async def health():
     settings = get_settings()
     graph_ready = False
-    triple_count = 0
+    node_count = 0
+    error_msg = None
+
     try:
-        client = get_graphdb_client()
-        results = await client.select("SELECT (COUNT(*) AS ?n) WHERE { ?s ?p ?o }")
-        graph_ready = bool(results)
+        from app.infrastructure.knowledge_graph.neo4j.client import Neo4jClient
+        client = Neo4jClient()
+        await client.connect()
+        results = await client.execute_read_query("MATCH (n) RETURN count(n) AS node_count")
         if results:
-            triple_count = int(results[0].get("n", 0))
-    except Exception:
-        pass
+            node_count = results[0].get("node_count", 0)
+            graph_ready = True
+        await client.close()
+    except Exception as exc:
+        error_msg = str(exc)
 
     return {
         "status": "ok" if graph_ready else "degraded",
         "graph_ready": graph_ready,
-        "graph_backend": settings.graph_backend,
-        "triple_count": triple_count,
+        "graph_backend": "neo4j",
+        "graph_backend_label": "Neo4j",
+        "neo4j_uri": settings.neo4j_uri,
+        "node_count": node_count,
+        **({"error": error_msg} if error_msg else {}),
     }

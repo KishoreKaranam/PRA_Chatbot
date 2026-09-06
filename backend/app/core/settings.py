@@ -1,24 +1,34 @@
 """Application settings loaded from environment / .env file."""
 from functools import lru_cache
+from pathlib import Path
+from enum import Enum
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+# Always resolve .env relative to this file's directory (backend/)
+_ENV_FILE = Path(__file__).resolve().parent.parent.parent / ".env"
 
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
-        env_file=".env",
+        env_file=str(_ENV_FILE),
         env_file_encoding="utf-8",
         extra="ignore",
     )
 
-    # Graph backend: "graphdb" (requires running GraphDB) or "rdflib" (in-memory, loads TTL files)
-    graph_backend: str = "graphdb"
-    ttl_file_path: str = ""  # Path to .ttl file or directory (used when graph_backend=rdflib)
+    # Retrieval backend: "neo4j" (Cypher) — primary backend
+    retrieval_backend: str = "neo4j"
 
-    # GraphDB (only used when graph_backend=graphdb)
-    graphdb_base_url: str = "http://localhost:7200"
-    graphdb_repository: str = "Payment_Reference_Architecture"
-    graphdb_username: str = ""
-    graphdb_password: str = ""
+    # FTS backend: "neo4j" uses Neo4j CONTAINS search
+    fts_backend: str = "neo4j"
+
+    # Graph backend: "neo4j"
+    graph_backend: str = "neo4j"
+
+    # Neo4j connection settings
+    neo4j_uri: str = "bolt://localhost:7687"
+    neo4j_user: str = "neo4j"
+    neo4j_password: str = ""
+    neo4j_database: str = "neo4j"
 
     # LLM Provider: "openai" | "azure" | "anthropic"
     llm_provider: str = "anthropic"
@@ -40,9 +50,16 @@ class Settings(BaseSettings):
     anthropic_model: str = "claude-sonnet-4-6"
     anthropic_max_tokens: int = 8096
 
+    # LLM – Azure AI Foundry Claude (used when llm_provider=azure_anthropic)
+    azure_ai_endpoint: str = ""              # e.g. https://<resource>.services.ai.azure.com
+    azure_ai_api_key: str = ""
+    azure_ai_model: str = "claude-sonnet-5"
+    azure_ai_api_version: str = "2024-12-01-preview"
+
     # Embeddings
     embedding_model: str = "text-embedding-3-large"
     embedding_enabled: bool = False
+    vector_backend: str = "legacy"  # "legacy"=in-memory NumPy+Azure; "neo4j"=requires pra_embedding_index
 
     # App
     backend_host: str = "0.0.0.0"
@@ -56,6 +73,11 @@ class Settings(BaseSettings):
     default_show_evidence: bool = True
     default_strict_ontology_mode: bool = False
     default_confidence_threshold: float = 0.3
+
+    # PostgreSQL
+    database_url: str = "postgresql+asyncpg://postgres:postgres@localhost:5432/pra_chatbot"
+    db_pool_size: int = 10
+    db_max_overflow: int = 20
 
 
 @lru_cache()

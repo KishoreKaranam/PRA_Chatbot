@@ -1,7 +1,7 @@
 """Agent instructions configuration endpoint."""
 from fastapi import APIRouter
 from app.models.schemas import AgentInstructions
-from app.services.config_service import get_config_service
+from app.infrastructure.configuration.config_service import get_config_service
 
 router = APIRouter()
 

@@ -1,9 +1,9 @@
 ﻿import { useState, useEffect, useRef, useCallback } from "react";
-import { Send, Loader2, PanelLeftClose, PanelLeft } from "lucide-react";
+import { Send, Loader2, PanelLeftClose, PanelLeft, RotateCcw } from "lucide-react";
 import { Sidebar } from "./components/Sidebar";
 import { UserBubble, BotBubble } from "./components/ChatBubbles";
 import { EmptyState } from "./components/EmptyState";
-import { fetchHealth, fetchInstructions, sendQuestionStream } from "./api";
+import { fetchHealth, fetchInstructions, sendQuestionStream, createSession } from "./api";
 import type { HealthResponse, Instructions, ChatResponse } from "./api";
 import "./App.css";
 
@@ -22,15 +22,32 @@ export default function App() {
   const [health, setHealth] = useState<HealthResponse | null>(null);
   const [instructions, setInstructions] = useState<Instructions>({});
   const [sidebarOpen, setSidebarOpen] = useState(true);
+
+  // Session ID — persisted in localStorage so page refreshes resume the same session
+  const [sessionId, setSessionId] = useState<string | null>(() => {
+    return localStorage.getItem("pra_session_id");
+  });
+
   const bottomRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
-
-  // Ref to accumulate streaming answer without React state races
   const streamRef = useRef<ChatResponse | null>(null);
 
   useEffect(() => {
     fetchHealth().then(setHealth).catch(() => setHealth(null));
     fetchInstructions().then(setInstructions).catch(() => {});
+
+    // Create a new session if none stored (first visit or cleared storage)
+    if (!localStorage.getItem("pra_session_id")) {
+      createSession()
+        .then((id) => {
+          localStorage.setItem("pra_session_id", id);
+          setSessionId(id);
+        })
+        .catch((err) => {
+          // Non-fatal: app still works in stateless mode if DB is unavailable
+          console.warn("Could not create session:", err);
+        });
+    }
   }, []);
 
   useEffect(() => {
@@ -44,73 +61,105 @@ export default function App() {
       setInput("");
       setError("");
 
-      // Add user message
       setMessages((m) => [...m, { role: "user", content: q, timestamp: new Date() }]);
       setLoading(true);
 
-      // Initialize the streaming accumulator
+      // Initialise streaming accumulator
       const streamResponse: ChatResponse = {
         question: q,
+        rewritten_question: q,
+        is_followup: false,
+        intent: "exploratory",
         answer: "",
         retrieval_modes_used: [],
         evidence: [],
         confidence: null,
         warning: null,
+        clarification_needed: null,
       };
       streamRef.current = streamResponse;
 
-      // Add placeholder assistant message
+      // Placeholder assistant bubble
       setMessages((m) => [...m, { role: "assistant", response: { ...streamResponse }, timestamp: new Date() }]);
 
-      try {
-        await sendQuestionStream(q, instructions, {
-          onRetrieval: (data) => {
-            if (!streamRef.current) return;
-            streamRef.current.retrieval_modes_used = data.retrieval_modes_used;
-            streamRef.current.evidence = data.evidence as ChatResponse["evidence"];
-            streamRef.current.warning = data.warning ?? null;
-            // Snapshot into React state
-            const snapshot = { ...streamRef.current };
-            setMessages((m) => {
-              const updated = m.slice();
-              updated[updated.length - 1] = { ...updated[updated.length - 1], response: snapshot };
-              return updated;
-            });
-          },
-          onToken: (text) => {
-            if (!streamRef.current) return;
-            streamRef.current.answer += text;
-            // Snapshot into React state
-            const snapshot = { ...streamRef.current };
-            setMessages((m) => {
-              const updated = m.slice();
-              updated[updated.length - 1] = { ...updated[updated.length - 1], response: snapshot };
-              return updated;
-            });
-          },
-          onDone: (data) => {
-            if (!streamRef.current) return;
-            streamRef.current.confidence = data.confidence;
-            const snapshot = { ...streamRef.current };
-            setMessages((m) => {
-              const updated = m.slice();
-              updated[updated.length - 1] = { ...updated[updated.length - 1], response: snapshot };
-              return updated;
-            });
-          },
-          onError: (errMsg) => {
-            setError(errMsg);
-          },
+      const snapshot = () => {
+        const s = { ...streamRef.current! };
+        setMessages((m) => {
+          const updated = m.slice();
+          updated[updated.length - 1] = { ...updated[updated.length - 1], response: s };
+          return updated;
         });
+      };
+
+      try {
+        await sendQuestionStream(
+          q,
+          instructions,
+          {
+            // Stage 1 + 2 result
+            onPipeline: (data) => {
+              if (!streamRef.current) return;
+              streamRef.current.rewritten_question = data.rewritten_question;
+              streamRef.current.is_followup = data.is_followup;
+              streamRef.current.intent = data.intent;
+              snapshot();
+            },
+            // Stage 3 — clarification needed
+            onClarification: (message) => {
+              if (!streamRef.current) return;
+              streamRef.current.answer = message;
+              streamRef.current.clarification_needed = message;
+              snapshot();
+            },
+            onRetrieval: (data) => {
+              if (!streamRef.current) return;
+              streamRef.current.retrieval_modes_used = data.retrieval_modes_used;
+              streamRef.current.evidence = data.evidence as ChatResponse["evidence"];
+              streamRef.current.warning = data.warning ?? null;
+              snapshot();
+            },
+            onToken: (text) => {
+              if (!streamRef.current) return;
+              streamRef.current.answer += text;
+              snapshot();
+            },
+            // Stage 7 — history now lives in DB; nothing to update client-side
+            onDone: (data) => {
+              if (!streamRef.current) return;
+              streamRef.current.confidence = data.confidence;
+              snapshot();
+            },
+            onError: (errMsg) => {
+              setError(errMsg);
+            },
+          },
+          sessionId,
+        );
       } catch (e: unknown) {
         setError((e as Error).message ?? "An unexpected error occurred");
       }
+
       streamRef.current = null;
       setLoading(false);
       setTimeout(() => inputRef.current?.focus(), 50);
     },
-    [loading, instructions]
+    [loading, instructions, sessionId]
   );
+
+  // New session — clear localStorage + messages + create fresh session
+  const startNewSession = useCallback(async () => {
+    localStorage.removeItem("pra_session_id");
+    setMessages([]);
+    setError("");
+    try {
+      const id = await createSession();
+      localStorage.setItem("pra_session_id", id);
+      setSessionId(id);
+    } catch (err) {
+      console.warn("Failed to create new session:", err);
+      setSessionId(null);
+    }
+  }, []);
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === "Enter" && !e.shiftKey) {
@@ -125,7 +174,7 @@ export default function App() {
     el.style.height = Math.min(el.scrollHeight, 140) + "px";
   };
 
-  const showSparql = instructions.show_sparql_queries ?? true;
+  const showQueries = instructions.show_sparql_queries ?? true;
   const showEvidence = instructions.show_raw_evidence ?? true;
 
   return (
@@ -157,10 +206,14 @@ export default function App() {
             <div className="app-header__subtitle">Knowledge Graph Assistant for Business Analysts</div>
           </div>
           <div className="app-header__actions">
+            <button className="new-session-btn" onClick={startNewSession} title="Start a new conversation" disabled={loading}>
+              <RotateCcw size={13} />
+              New Chat
+            </button>
             {health && (
               <span className={`status-pill ${health.graph_ready ? "status-pill--connected" : "status-pill--disconnected"}`}>
                 <span style={{ width: 6, height: 6, borderRadius: "50%", background: "currentColor", display: "inline-block" }} />
-                {health.graph_ready ? "Knowledge Graph Ready" : "Offline"}
+                {health.graph_ready ? `${health.graph_backend_label ?? "Neo4j"} Ready` : "Offline"}
               </span>
             )}
           </div>
@@ -173,9 +226,8 @@ export default function App() {
               m.role === "user" ? (
                 <UserBubble key={i} text={m.content!} />
               ) : (
-                // Don't render the bot bubble while still waiting for first token
                 loading && m.response?.answer === "" ? null : (
-                  <BotBubble key={i} msg={m.response!} showSparql={showSparql} showEvidence={showEvidence} />
+                  <BotBubble key={i} msg={m.response!} showQueries={showQueries} showEvidence={showEvidence} />
                 )
               )
             )

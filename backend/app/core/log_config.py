@@ -22,6 +22,10 @@ def configure_logging() -> None:
 
     _logging.basicConfig(level=level)
 
+    # Suppress noisy third-party HTTP/SDK loggers
+    for noisy in ("httpx", "httpcore", "anthropic", "openai", "anthropic._base_client"):
+        _logging.getLogger(noisy).setLevel(_logging.WARNING)
+
 
 def get_logger(name: str):
     return structlog.get_logger(name)
