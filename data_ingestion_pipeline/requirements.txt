@@ -1,0 +1,8 @@
+flask
+anthropic
+neo4j
+python-docx
+openpyxl
+pdfplumber
+striprtf
+python-dotenv
