@@ -50,6 +50,12 @@ class Settings(BaseSettings):
     anthropic_model: str = "claude-sonnet-4-6"
     anthropic_max_tokens: int = 8096
 
+    # LLM – Azure AI Foundry Claude (used when llm_provider=azure_anthropic)
+    azure_ai_endpoint: str = ""              # e.g. https://<resource>.services.ai.azure.com
+    azure_ai_api_key: str = ""
+    azure_ai_model: str = "claude-sonnet-5"
+    azure_ai_api_version: str = "2024-12-01-preview"
+
     # Embeddings
     embedding_model: str = "text-embedding-3-large"
     embedding_enabled: bool = False

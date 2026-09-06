@@ -52,6 +52,11 @@ ENTITY_TYPE_MAP: dict[str, str] = {
     "Input":          "Input",
     "Output":         "Output",
     "PRA":            "PRA",
+    "Pattern":        "Pattern",
+    "AntiPattern":    "AntiPattern",
+    "Intent":         "Intent",
+    "WhyItMatters":   "WhyItMatters",
+    "GuideDocument":  "GuideDocument",
 }
 
 

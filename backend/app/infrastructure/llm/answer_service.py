@@ -66,6 +66,27 @@ class AnswerGenerationService:
                 endpoint=settings.azure_openai_endpoint,
                 deployment=self._model,
             )
+        elif self._provider == "azure_anthropic":
+            # ── Claude via Azure AI Foundry — uses the native Anthropic Python
+            # SDK (confirmed by resource owner), pointed at the Foundry
+            # endpoint. Azure's gateway expects the "api-key" header in
+            # addition to the SDK's default "x-api-key".
+            self._anthropic_client = anthropic.AsyncAnthropic(
+                api_key=settings.azure_ai_api_key,
+                base_url=settings.azure_ai_endpoint.rstrip("/"),
+                default_headers={"api-key": settings.azure_ai_api_key},
+                default_query={"api-version": settings.azure_ai_api_version},
+                http_client=httpx.AsyncClient(verify=False),
+            )
+            self._model = settings.azure_ai_model
+            self._client = None
+            self._max_tokens = 8000
+            logger.info(
+                "llm_backend",
+                backend="azure_anthropic",
+                endpoint=settings.azure_ai_endpoint,
+                model=self._model,
+            )
         else:
             # ── Standard OpenAI (or any OpenAI-compatible endpoint) ───────────
             self._client = AsyncOpenAI(
@@ -117,15 +138,15 @@ class AnswerGenerationService:
         logger.info("llm_call", model=self._model, modes=modes_used, provider=self._provider,
                     is_followup=is_followup, intent=intent, history_turns=len(history or []))
 
-        if self._provider == "anthropic":
-            # ── Anthropic Claude API ──────────────────────────────────────────
+        if self._provider in ("anthropic", "azure_anthropic"):
+            # ── Anthropic Claude API (direct or via Azure AI Foundry) ──────────
             response = await self._anthropic_client.messages.create(
                 model=self._model,
                 max_tokens=self._max_tokens,
                 system=system_prompt,
                 messages=messages,
             )
-            answer = response.content[0].text if response.content else ""
+            answer = self._extract_text_from_content(response.content)
         else:
             # ── OpenAI / Azure OpenAI API ─────────────────────────────────────
             response = await self._client.chat.completions.create(
@@ -137,6 +158,21 @@ class AnswerGenerationService:
 
         cleaned_answer = self._clean_answer(answer)
         return cleaned_answer.strip(), confidence
+
+    @staticmethod
+    def _extract_text_from_content(content) -> str:
+        """
+        Extract the answer text from an Anthropic response's content blocks.
+
+        Extended-thinking-capable models (e.g. claude-sonnet-4.5+) may return
+        a `ThinkingBlock` (internal reasoning, has `.thinking` not `.text`)
+        before the actual `TextBlock`. Skip any non-text blocks and
+        concatenate all text blocks found.
+        """
+        if not content:
+            return ""
+        texts = [block.text for block in content if getattr(block, "type", None) == "text"]
+        return "".join(texts)
 
     async def generate_stream(
         self,
@@ -178,7 +214,7 @@ class AnswerGenerationService:
         logger.info("llm_stream_call", model=self._model, modes=modes_used, provider=self._provider,
                     is_followup=is_followup, intent=intent, history_turns=len(history or []))
 
-        if self._provider == "anthropic":
+        if self._provider in ("anthropic", "azure_anthropic"):
             async with self._anthropic_client.messages.stream(
                 model=self._model,
                 max_tokens=self._max_tokens,

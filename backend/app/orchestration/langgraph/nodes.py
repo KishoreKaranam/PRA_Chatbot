@@ -65,6 +65,7 @@ logger = get_logger(__name__)
 _answer_svc: AnswerGenerationService | None = None
 _orchestrator: RetrievalOrchestrator | None = None
 _haiku_client: anthropic.AsyncAnthropic | None = None
+_haiku_client_azure: Any | None = None
 
 MAX_HISTORY_TURNS = 6       # sliding window — 3 user+assistant pairs
 PRONOUN_RE = re.compile(
@@ -214,15 +215,29 @@ def _build_vector_service(
     return legacy_service_cls(graph_client)
 
 
-def _get_haiku_client() -> anthropic.AsyncAnthropic:
-    global _haiku_client
+def _get_haiku_client():
+    """Return (client, model, provider) for the lightweight context-resolution call."""
+    global _haiku_client, _haiku_client_azure
+    settings = get_settings()
+    provider = settings.llm_provider.lower()
+
+    if provider == "azure_anthropic":
+        if _haiku_client_azure is None:
+            _haiku_client_azure = anthropic.AsyncAnthropic(
+                api_key=settings.azure_ai_api_key,
+                base_url=settings.azure_ai_endpoint.rstrip("/"),
+                default_headers={"api-key": settings.azure_ai_api_key},
+                default_query={"api-version": settings.azure_ai_api_version},
+                http_client=httpx.AsyncClient(verify=False),
+            )
+        return _haiku_client_azure, settings.azure_ai_model, "azure_anthropic"
+
     if _haiku_client is None:
-        settings = get_settings()
         _haiku_client = anthropic.AsyncAnthropic(
             api_key=settings.anthropic_api_key,
             http_client=httpx.AsyncClient(verify=False),
         )
-    return _haiku_client
+    return _haiku_client, "claude-haiku-4-5", "anthropic"
 
 
 def _format_history(history: list[ConversationTurn], max_turns: int = MAX_HISTORY_TURNS) -> str:
@@ -231,6 +246,20 @@ def _format_history(history: list[ConversationTurn], max_turns: int = MAX_HISTOR
         label = "User" if turn.role == "user" else "Assistant"
         lines.append(f"{label}: {turn.content}")
     return "\n".join(lines)
+
+
+def _extract_text_from_content(content) -> str:
+    """
+    Extract answer text from an Anthropic response's content blocks.
+
+    Extended-thinking-capable models (e.g. claude-sonnet-4.5+) may return a
+    `ThinkingBlock` (internal reasoning, has `.thinking` not `.text`) before
+    the actual `TextBlock`. Skip any non-text blocks.
+    """
+    if not content:
+        return ""
+    texts = [block.text for block in content if getattr(block, "type", None) == "text"]
+    return "".join(texts)
 
 
 def _get_db(config: RunnableConfig | None):
@@ -361,15 +390,15 @@ async def node_resolve_context(state: PRAState, config: RunnableConfig) -> dict:
     # ── Layer C: Claude Haiku (only if still ambiguous) ───────────────────────
     if has_pronoun and entity_confidence < 0.8 and history:
         try:
-            haiku = _get_haiku_client()
+            haiku, haiku_model, haiku_provider = _get_haiku_client()
             history_text = _format_history(history)
             prompt = build_node_context_resolution_prompt(history_text, raw)
             response = await haiku.messages.create(
-                model="claude-haiku-4-5",
+                model=haiku_model,
                 max_tokens=256,
                 messages=[{"role": "user", "content": prompt}],
             )
-            raw_json = response.content[0].text.strip()
+            raw_json = _extract_text_from_content(response.content).strip()
             match = re.search(r"\{.*\}", raw_json, re.DOTALL)
             if match:
                 result = json.loads(match.group())

@@ -13,4 +13,9 @@ SEARCHABLE_LABELS = (
     "Input",
     "Output",
     "PRA",
+    "Pattern",
+    "AntiPattern",
+    "Intent",
+    "WhyItMatters",
+    "GuideDocument",
 )

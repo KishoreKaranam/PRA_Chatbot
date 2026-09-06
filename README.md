@@ -164,7 +164,7 @@ PRA_Chatbot/
 | Node.js | 18+ | React frontend |
 | Neo4j | 5.x | Graph database |
 | PostgreSQL | 14+ | Conversation history |
-| Anthropic API key | — | Claude Sonnet 4.6 |
+| Anthropic API key or Azure AI API key | — | Required for the selected Claude provider |
 | Azure OpenAI API key | — | `text-embedding-3-large` embeddings |
 
 ### Neo4j Setup — Load Dump File
@@ -188,12 +188,28 @@ CALL db.relationshipTypes()   -- HAS_RULE, CONTAINS, APPLIES_TO, etc.
 
 ## Setup & Run
 
+Before starting the application for the first time, ensure Neo4j and
+PostgreSQL are running. Neo4j must contain the PRA data and both required
+indexes must be created; the vector nodes must also have embeddings. Follow
+[Required Neo4j Indexes](#required-neo4j-indexes) before starting the backend.
+
+The backend creates its PostgreSQL tables automatically, but the PostgreSQL
+server and the `pra_chatbot` database must already exist. Ensure that
+`DATABASE_URL` in `backend/.env` matches the local PostgreSQL credentials.
+
 ### 1. Configure environment
 
 ```powershell
 Copy-Item .env.example backend\.env
 # Edit backend\.env with your credentials (see Environment Variables below)
 ```
+
+The starter `.env.example` contains placeholders. For the current Neo4j
+configuration, make sure `NEO4J_URI`, `NEO4J_USER`, `NEO4J_PASSWORD`,
+`NEO4J_DATABASE`, `RETRIEVAL_BACKEND=neo4j`, `FTS_BACKEND=neo4j`, and
+`VECTOR_BACKEND=neo4j` are present in `backend/.env`. Also configure either
+the direct Anthropic variables or the Azure AI Foundry variables described
+below. Do not commit `backend/.env` or any real API keys.
 
 ### 2. Start the backend
 
@@ -243,13 +259,22 @@ npm run dev
 | `NEO4J_PASSWORD` | `password` | Password |
 | `NEO4J_DATABASE` | `neo4j` | Database name |
 
-### LLM — Anthropic (required)
+### LLM Provider (one required)
 
 | Variable | Example | Description |
 |----------|---------|-------------|
-| `LLM_PROVIDER` | `anthropic` | `anthropic` \| `openai` \| `azure` |
+| `LLM_PROVIDER` | `anthropic` | `anthropic` \| `azure_anthropic` \| `openai` \| `azure` |
 | `ANTHROPIC_API_KEY` | `sk-ant-...` | Anthropic API key |
 | `ANTHROPIC_MODEL` | `claude-sonnet-4-6` | Model name |
+| `AZURE_AI_API_KEY` | `...` | Azure AI Foundry Claude API key when using `azure_anthropic` |
+| `AZURE_AI_ENDPOINT` | `https://<resource>.services.ai.azure.com/api/projects/<project>` | Azure AI Foundry endpoint |
+| `AZURE_AI_MODEL` | `claude-sonnet-5` | Azure Claude deployment name |
+| `AZURE_AI_API_VERSION` | `2023-06-01` | Azure AI API version |
+
+Set `LLM_PROVIDER=anthropic` to call Anthropic directly, or
+`LLM_PROVIDER=azure_anthropic` to call Claude through Azure AI Foundry. Only
+the credentials for the selected provider are required. `LLM_PROVIDER=azure`
+is for Azure OpenAI and is separate from `azure_anthropic`.
 
 ### Embeddings — Azure OpenAI (required for vector search)
 
@@ -307,6 +332,11 @@ npm run dev
 | `PostCondition` | `name`, `description` |
 | `Input` | `name`, `description` |
 | `Output` | `name`, `description` |
+| `GuideDocument` | `name`, `description`, `source` |
+| `Pattern` | `name`, `description`, `source` |
+| `AntiPattern` | `name`, `description`, `source` |
+| `Intent` | `name`, `description`, `source` |
+| `WhyItMatters` | `name`, `description`, `source` |
 
 ### Relationships
 
@@ -325,6 +355,12 @@ Function ──APPLIES_TO────────► PaymentScheme
 Function ──PROVIDES_TO───────► Function
 Function ──DEPENDS_ON_SUPPORTING──► SupportingDomain
 SupportingDomain ──SUPPORTS_SCHEME──► PaymentScheme
+PRA ──HAS_GUIDE───────────────► GuideDocument
+PRA ──HAS_PATTERN─────────────► Pattern
+GuideDocument ──DOCUMENTS─────► Pattern
+Pattern ──HAS_ANTI_PATTERN────► AntiPattern
+Pattern ──HAS_INTENT──────────► Intent
+Pattern ──HAS_WHY_IT_MATTERS──► WhyItMatters
 ```
 
 ### Required Neo4j Indexes
@@ -338,7 +374,7 @@ for the configured retrieval paths.
 
 ```cypher
 CREATE FULLTEXT INDEX pra_fulltext IF NOT EXISTS
-FOR (n:Function|Domain|SupportingDomain|Rule|PaymentScheme|Phase|Purpose|PreCondition|PostCondition|Input|Output|PRA)
+FOR (n:Function|Domain|SupportingDomain|Rule|PaymentScheme|Phase|Purpose|PreCondition|PostCondition|Input|Output|PRA|Pattern|AntiPattern|Intent|WhyItMatters|GuideDocument)
 ON EACH [n.name, n.description, n.comment];
 ```
 
@@ -350,7 +386,7 @@ recommended for complete and efficient FTS retrieval.
 
 ```cypher
 CREATE VECTOR INDEX pra_embedding_index IF NOT EXISTS
-FOR (n:Function|Domain|SupportingDomain|Rule|PaymentScheme|Phase|Purpose|PreCondition|PostCondition|Input|Output|PRA)
+FOR (n:Function|Domain|SupportingDomain|Rule|PaymentScheme|Phase|Purpose|PreCondition|PostCondition|Input|Output|PRA|Pattern|AntiPattern|Intent|WhyItMatters|GuideDocument)
 ON (n.embedding)
 OPTIONS {
   indexConfig: {

@@ -1,4 +1,4 @@
-"""Small, read-only Neo4j graph retrieval service."""
+﻿"""Small, read-only Neo4j graph retrieval service."""
 from __future__ import annotations
 
 import re
@@ -11,7 +11,7 @@ from app.models.schemas import Neo4jGraphEvidence, Neo4jNode, Neo4jRelationship
 class Neo4jGraphRetrievalService:
     """Resolve named PRA entities and execute controlled graph patterns."""
 
-    # Map question keywords → actual Neo4j labels in the new dump
+    # Map question keywords â†’ actual Neo4j labels in the new dump
     _ENTITY_LABELS = {
         "function":           "Function",
         "business function":  "Function",
@@ -31,6 +31,16 @@ class Neo4jGraphRetrievalService:
         "scheme":             "PaymentScheme",
         "input":              "Input",
         "output":             "Output",
+        "pattern":            "Pattern",
+        "patterns":           "Pattern",
+        "anti-pattern":       "AntiPattern",
+        "anti pattern":       "AntiPattern",
+        "antipattern":        "AntiPattern",
+        "anti-patterns":      "AntiPattern",
+        "intent":             "Intent",
+        "why it matters":     "WhyItMatters",
+        "guide":              "GuideDocument",
+        "guide document":     "GuideDocument",
     }
 
     _DOMAIN_LABELS = ["Domain", "SupportingDomain"]
@@ -46,7 +56,7 @@ class Neo4jGraphRetrievalService:
     LIMIT $limit
     """
 
-    # Domain → Functions
+    # Domain â†’ Functions
     _DOMAIN_FUNCTIONS_QUERY = """
     MATCH (domain:Domain {name: $entity_name})-[:CONTAINS]->(f:Function)
     RETURN domain AS n, f AS m,
@@ -54,7 +64,7 @@ class Neo4jGraphRetrievalService:
     LIMIT $limit
     """
 
-    # SupportingDomain → Functions
+    # SupportingDomain â†’ Functions
     _SUPPORTING_DOMAIN_FUNCTIONS_QUERY = """
     MATCH (sd:SupportingDomain {name: $entity_name})-[:CONTAINS]->(f:Function)
     RETURN sd AS n, f AS m,
@@ -70,7 +80,7 @@ class Neo4jGraphRetrievalService:
     LIMIT $limit
     """
 
-    # Function → Rules
+    # Function â†’ Rules
     _FUNCTION_RULES_QUERY = """
     MATCH (source:Function)-[r:HAS_RULE]->(target:Rule)
     RETURN source AS n, r, target AS m,
@@ -78,7 +88,7 @@ class Neo4jGraphRetrievalService:
     LIMIT $limit
     """
 
-    # Function → PreConditions
+    # Function â†’ PreConditions
     _PRECONDITIONS_QUERY = """
     MATCH (source:Function)-[r:HAS_PRECONDITION]->(target:PreCondition)
     RETURN source AS n, r, target AS m,
@@ -86,9 +96,56 @@ class Neo4jGraphRetrievalService:
     LIMIT $limit
     """
 
-    # Function → PostConditions
+    # Function â†’ PostConditions
     _POSTCONDITIONS_QUERY = """
     MATCH (source:Function)-[r:HAS_POSTCONDITION]->(target:PostCondition)
+    RETURN source AS n, r, target AS m,
+           labels(source) AS n_labels, labels(target) AS m_labels
+    LIMIT $limit
+    """
+
+    # Pattern â†’ AntiPattern
+    _PATTERN_ANTIPATTERNS_QUERY = """
+    MATCH (source:Pattern)-[r:HAS_ANTI_PATTERN]->(target:AntiPattern)
+    RETURN source AS n, r, target AS m,
+           labels(source) AS n_labels, labels(target) AS m_labels
+    LIMIT $limit
+    """
+
+    # Pattern â†’ Intent
+    _PATTERN_INTENT_QUERY = """
+    MATCH (source:Pattern)-[r:HAS_INTENT]->(target:Intent)
+    RETURN source AS n, r, target AS m,
+           labels(source) AS n_labels, labels(target) AS m_labels
+    LIMIT $limit
+    """
+
+    # Pattern â†’ WhyItMatters
+    _PATTERN_WHY_IT_MATTERS_QUERY = """
+    MATCH (source:Pattern)-[r:HAS_WHY_IT_MATTERS]->(target:WhyItMatters)
+    RETURN source AS n, r, target AS m,
+           labels(source) AS n_labels, labels(target) AS m_labels
+    LIMIT $limit
+    """
+
+    # GuideDocument â†’ Pattern (documents)
+    _GUIDE_PATTERNS_QUERY = """
+    MATCH (source:GuideDocument)-[r:DOCUMENTS]->(target:Pattern)
+    RETURN source AS n, r, target AS m,
+           labels(source) AS n_labels, labels(target) AS m_labels
+    LIMIT $limit
+    """
+
+    # PRA â†’ Pattern / GuideDocument
+    _PRA_PATTERNS_QUERY = """
+    MATCH (source:PRA)-[r:HAS_PATTERN]->(target:Pattern)
+    RETURN source AS n, r, target AS m,
+           labels(source) AS n_labels, labels(target) AS m_labels
+    LIMIT $limit
+    """
+
+    _PRA_GUIDES_QUERY = """
+    MATCH (source:PRA)-[r:HAS_GUIDE]->(target:GuideDocument)
     RETURN source AS n, r, target AS m,
            labels(source) AS n_labels, labels(target) AS m_labels
     LIMIT $limit
@@ -135,6 +192,42 @@ class Neo4jGraphRetrievalService:
             "intent_keywords": ["postcondition", "postconditions"],
             "entity_labels": ["PostCondition"],
             "query": _POSTCONDITIONS_QUERY,
+        },
+        "pattern_antipatterns": {
+            "kind": "generic",
+            "intent_keywords": ["anti-pattern", "anti pattern", "antipattern", "anti-patterns"],
+            "entity_labels": ["Pattern", "AntiPattern"],
+            "query": _PATTERN_ANTIPATTERNS_QUERY,
+        },
+        "pattern_intent": {
+            "kind": "generic",
+            "intent_keywords": ["intent"],
+            "entity_labels": ["Pattern", "Intent"],
+            "query": _PATTERN_INTENT_QUERY,
+        },
+        "pattern_why_it_matters": {
+            "kind": "generic",
+            "intent_keywords": ["why it matters", "why does it matter", "matters"],
+            "entity_labels": ["Pattern", "WhyItMatters"],
+            "query": _PATTERN_WHY_IT_MATTERS_QUERY,
+        },
+        "guide_patterns": {
+            "kind": "generic",
+            "intent_keywords": ["guide", "documents", "documented"],
+            "entity_labels": ["GuideDocument", "Pattern"],
+            "query": _GUIDE_PATTERNS_QUERY,
+        },
+        "pra_patterns": {
+            "kind": "generic",
+            "intent_keywords": ["pattern", "patterns"],
+            "entity_labels": ["PRA", "Pattern"],
+            "query": _PRA_PATTERNS_QUERY,
+        },
+        "pra_guides": {
+            "kind": "generic",
+            "intent_keywords": ["guide", "guides"],
+            "entity_labels": ["PRA", "GuideDocument"],
+            "query": _PRA_GUIDES_QUERY,
         },
     }
 

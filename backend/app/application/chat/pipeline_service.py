@@ -56,6 +56,17 @@ class ConversationPipeline:
             # Use a cheaper/faster model for lightweight pipeline stages
             self._fast_model = "claude-haiku-4-5"
             self._main_model = settings.anthropic_model
+        elif self._provider == "azure_anthropic":
+            self._client = anthropic.AsyncAnthropic(
+                api_key=settings.azure_ai_api_key,
+                base_url=settings.azure_ai_endpoint.rstrip("/"),
+                default_headers={"api-key": settings.azure_ai_api_key},
+                default_query={"api-version": settings.azure_ai_api_version},
+                http_client=httpx.AsyncClient(verify=False),
+            )
+            # No separate cheap model on Foundry deployment — reuse the main model
+            self._fast_model = settings.azure_ai_model
+            self._main_model = settings.azure_ai_model
         else:
             self._client = None
             self._fast_model = None
@@ -222,15 +233,29 @@ class ConversationPipeline:
             lines.append(f"{label}: {turn.content}")
         return "\n".join(lines)
 
+    @staticmethod
+    def _extract_text_from_content(content) -> str:
+        """
+        Extract answer text from an Anthropic response's content blocks.
+
+        Extended-thinking-capable models (e.g. claude-sonnet-4.5+) may return
+        a `ThinkingBlock` (internal reasoning, has `.thinking` not `.text`)
+        before the actual `TextBlock`. Skip any non-text blocks.
+        """
+        if not content:
+            return ""
+        texts = [block.text for block in content if getattr(block, "type", None) == "text"]
+        return "".join(texts)
+
     async def _fast_llm_json(self, prompt: str) -> dict:
         """Make a small fast LLM call and parse the JSON response."""
-        if self._provider == "anthropic":
+        if self._provider in ("anthropic", "azure_anthropic"):
             response = await self._client.messages.create(
                 model=self._fast_model,
                 max_tokens=256,
                 messages=[{"role": "user", "content": prompt}],
             )
-            raw = response.content[0].text.strip()
+            raw = self._extract_text_from_content(response.content).strip()
         else:
             raise NotImplementedError("pipeline fast LLM only supports anthropic currently")
 
