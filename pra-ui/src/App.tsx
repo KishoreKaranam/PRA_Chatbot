@@ -1,9 +1,9 @@
 ﻿import { useState, useEffect, useRef, useCallback } from "react";
-import { Send, Loader2, PanelLeftClose, PanelLeft, RotateCcw } from "lucide-react";
+import { Send, PanelLeftClose, PanelLeft, Square, RefreshCw } from "lucide-react";
 import { Sidebar } from "./components/Sidebar";
 import { UserBubble, BotBubble } from "./components/ChatBubbles";
 import { EmptyState } from "./components/EmptyState";
-import { fetchHealth, fetchInstructions, sendQuestionStream, createSession } from "./api";
+import { fetchHealth, fetchInstructions, sendQuestionStream, createSession, loadSessionHistory } from "./api";
 import type { HealthResponse, Instructions, ChatResponse } from "./api";
 import "./App.css";
 
@@ -28,9 +28,15 @@ export default function App() {
     return localStorage.getItem("pra_session_id");
   });
 
+  // Bumped after every completed turn so the history sidebar refetches its list
+  const [historyVersion, setHistoryVersion] = useState(0);
+  const [historyLoading, setHistoryLoading] = useState(false);
+
   const bottomRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const streamRef = useRef<ChatResponse | null>(null);
+  const abortRef = useRef<AbortController | null>(null);
+  const lastQuestionRef = useRef<string>("");
 
   useEffect(() => {
     fetchHealth().then(setHealth).catch(() => setHealth(null));
@@ -60,9 +66,13 @@ export default function App() {
       if (!q || loading) return;
       setInput("");
       setError("");
+      lastQuestionRef.current = q;
 
       setMessages((m) => [...m, { role: "user", content: q, timestamp: new Date() }]);
       setLoading(true);
+
+      const controller = new AbortController();
+      abortRef.current = controller;
 
       // Initialise streaming accumulator
       const streamResponse: ChatResponse = {
@@ -128,23 +138,38 @@ export default function App() {
               if (!streamRef.current) return;
               streamRef.current.confidence = data.confidence;
               snapshot();
+              setHistoryVersion((v) => v + 1);
             },
             onError: (errMsg) => {
               setError(errMsg);
             },
           },
           sessionId,
+          controller.signal,
         );
       } catch (e: unknown) {
-        setError((e as Error).message ?? "An unexpected error occurred");
+        if ((e as Error).name !== "AbortError") {
+          setError((e as Error).message ?? "An unexpected error occurred");
+        }
       }
 
       streamRef.current = null;
+      abortRef.current = null;
       setLoading(false);
       setTimeout(() => inputRef.current?.focus(), 50);
     },
     [loading, instructions, sessionId]
   );
+
+  // Stop the in-flight stream — keeps whatever text has been generated so far
+  const stopGenerating = useCallback(() => {
+    abortRef.current?.abort();
+  }, []);
+
+  // Retry the last failed question
+  const retryLast = useCallback(() => {
+    if (lastQuestionRef.current) submit(lastQuestionRef.current);
+  }, [submit]);
 
   // New session — clear localStorage + messages + create fresh session
   const startNewSession = useCallback(async () => {
@@ -161,6 +186,43 @@ export default function App() {
     }
   }, []);
 
+  // Switch to a past conversation — loads full history from Postgres and
+  // replaces the current message list, like clicking a chat in ChatGPT's sidebar.
+  const loadSession = useCallback(async (id: string) => {
+    if (id === sessionId) return;
+    abortRef.current?.abort();
+    setError("");
+    setHistoryLoading(true);
+    try {
+      const turns = await loadSessionHistory(id);
+      const loaded: Message[] = turns.map((t) => {
+        if (t.role === "user") {
+          return { role: "user", content: t.rewritten_content || t.raw_content, timestamp: new Date(t.timestamp ?? Date.now()) };
+        }
+        const response: ChatResponse = {
+          question: "",
+          rewritten_question: "",
+          is_followup: t.is_followup,
+          intent: t.intent ?? "exploratory",
+          answer: t.raw_content,
+          retrieval_modes_used: t.modes_used,
+          evidence: [],
+          confidence: t.confidence,
+          warning: null,
+          clarification_needed: null,
+        };
+        return { role: "assistant", response, timestamp: new Date(t.timestamp ?? Date.now()) };
+      });
+      setMessages(loaded);
+      localStorage.setItem("pra_session_id", id);
+      setSessionId(id);
+    } catch (err) {
+      setError((err as Error).message ?? "Failed to load conversation");
+    } finally {
+      setHistoryLoading(false);
+    }
+  }, [sessionId]);
+
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
@@ -174,8 +236,6 @@ export default function App() {
     el.style.height = Math.min(el.scrollHeight, 140) + "px";
   };
 
-  const showQueries = instructions.show_sparql_queries ?? true;
-  const showEvidence = instructions.show_raw_evidence ?? true;
 
   return (
     <div className="app-layout">
@@ -183,6 +243,10 @@ export default function App() {
         instructions={instructions}
         onInstructionsChange={setInstructions}
         collapsed={!sidebarOpen}
+        currentSessionId={sessionId}
+        historyVersion={historyVersion}
+        onSelectSession={loadSession}
+        onNewChat={startNewSession}
       />
       <div className="main-panel">
         <header className="app-header">
@@ -206,10 +270,6 @@ export default function App() {
             <div className="app-header__subtitle">Knowledge Graph Assistant for Business Analysts</div>
           </div>
           <div className="app-header__actions">
-            <button className="new-session-btn" onClick={startNewSession} title="Start a new conversation" disabled={loading}>
-              <RotateCcw size={13} />
-              New Chat
-            </button>
             {health && (
               <span className={`status-pill ${health.graph_ready ? "status-pill--connected" : "status-pill--disconnected"}`}>
                 <span style={{ width: 6, height: 6, borderRadius: "50%", background: "currentColor", display: "inline-block" }} />
@@ -219,7 +279,12 @@ export default function App() {
           </div>
         </header>
         <div className="messages-container">
-          {messages.length === 0 && !loading ? (
+          {historyLoading ? (
+            <div className="loading-indicator">
+              <div className="typing-dots"><span /><span /><span /></div>
+              <span style={{ fontSize: 13, color: "var(--text-muted)" }}>Loading conversation...</span>
+            </div>
+          ) : messages.length === 0 && !loading ? (
             <EmptyState onHint={submit} />
           ) : (
             messages.map((m, i) =>
@@ -227,7 +292,7 @@ export default function App() {
                 <UserBubble key={i} text={m.content!} />
               ) : (
                 loading && m.response?.answer === "" ? null : (
-                  <BotBubble key={i} msg={m.response!} showQueries={showQueries} showEvidence={showEvidence} />
+                  <BotBubble key={i} msg={m.response!} streaming={loading && i === messages.length - 1} />
                 )
               )
             )
@@ -239,15 +304,28 @@ export default function App() {
               <span style={{ fontSize: 13, color: "var(--text-muted)" }}>Querying knowledge graph...</span>
             </div>
           )}
-          {error && <div className="error-banner">{error}</div>}
+          {error && (
+            <div className="error-banner">
+              <span>{error}</span>
+              <button className="error-retry-btn" onClick={retryLast} title="Retry last question">
+                <RefreshCw size={12} /> Retry
+              </button>
+            </div>
+          )}
           <div ref={bottomRef} />
         </div>
         <div className="input-container">
           <div className="input-wrapper">
             <textarea ref={inputRef} className="input-textarea" value={input} onChange={(e) => setInput(e.target.value)} onKeyDown={handleKeyDown} onInput={handleTextareaInput} placeholder="Ask about payment domains, business functions, rules, activities..." rows={1} disabled={loading} />
-            <button className="send-btn" onClick={() => submit(input)} disabled={loading || !input.trim()} title="Send message">
-              {loading ? <Loader2 size={18} style={{ animation: "spin 1s linear infinite" }} /> : <Send size={18} />}
-            </button>
+            {loading ? (
+              <button className="send-btn send-btn--stop" onClick={stopGenerating} title="Stop generating">
+                <Square size={16} fill="currentColor" />
+              </button>
+            ) : (
+              <button className="send-btn" onClick={() => submit(input)} disabled={!input.trim()} title="Send message">
+                <Send size={18} />
+              </button>
+            )}
           </div>
           <p className="input-hint">Press Enter to send &middot; Shift+Enter for new line</p>
         </div>

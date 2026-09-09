@@ -184,15 +184,72 @@ export async function createSession(userId?: string): Promise<string> {
   return data.session_id;
 }
 
+// ── Chat history sidebar ─────────────────────────────────────────────────────
+
+export interface SessionSummary {
+  session_id: string;
+  title: string;
+  created_at: string | null;
+  last_active: string | null;
+  message_count: number;
+}
+
+export interface SessionListResponse {
+  sessions: SessionSummary[];
+}
+
+export interface HistoryTurn {
+  id: number;
+  role: 'user' | 'assistant';
+  raw_content: string;
+  rewritten_content: string | null;
+  intent: string | null;
+  is_followup: boolean;
+  entities: string[];
+  confidence: number | null;
+  modes_used: string[];
+  timestamp: string | null;
+}
+
+export interface SessionHistoryResponse {
+  session_id: string;
+  turn_count: number;
+  turns: HistoryTurn[];
+}
+
+/** List past conversations (most-recently-active first) for the sidebar. */
+export async function listSessions(): Promise<SessionSummary[]> {
+  const r = await fetch(`${BASE}/session`);
+  if (!r.ok) throw new Error(`Failed to list sessions: ${r.status}`);
+  const data: SessionListResponse = await r.json();
+  return data.sessions;
+}
+
+/** Load the full turn-by-turn history for a session (used when re-opening a past chat). */
+export async function loadSessionHistory(sessionId: string): Promise<HistoryTurn[]> {
+  const r = await fetch(`${BASE}/session/${sessionId}/history`);
+  if (!r.ok) throw new Error(`Failed to load history: ${r.status}`);
+  const data: SessionHistoryResponse = await r.json();
+  return data.turns;
+}
+
+/** Permanently delete a session and all its turns. */
+export async function deleteSession(sessionId: string): Promise<void> {
+  const r = await fetch(`${BASE}/session/${sessionId}`, { method: 'DELETE' });
+  if (!r.ok) throw new Error(`Failed to delete session: ${r.status}`);
+}
+
 export async function sendQuestionStream(
   question: string,
   instructions: Instructions,
   callbacks: StreamCallbacks,
   sessionId: string | null = null,   // replaces conversationHistory
+  signal?: AbortSignal,
 ): Promise<void> {
   const r = await fetch(`${BASE}/chat/stream`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
+    signal,
     body: JSON.stringify({
       question,
       session_id: sessionId,
@@ -213,7 +270,13 @@ export async function sendQuestionStream(
   let buffer = '';
 
   while (true) {
-    const { done, value } = await reader.read();
+    let done: boolean, value: Uint8Array | undefined;
+    try {
+      ({ done, value } = await reader.read());
+    } catch (e) {
+      if ((e as Error).name === 'AbortError') return;
+      throw e;
+    }
     if (done) break;
 
     buffer += decoder.decode(value, { stream: true });

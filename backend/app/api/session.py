@@ -18,7 +18,12 @@ from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.infrastructure.persistence.postgres.database import get_db
-from app.infrastructure.persistence.postgres.session_store import create_session, load_history_full
+from app.infrastructure.persistence.postgres.session_store import (
+    create_session,
+    delete_session,
+    list_sessions,
+    load_history_full,
+)
 
 router = APIRouter(prefix="/session", tags=["session"])
 
@@ -59,6 +64,24 @@ class SessionHistoryResponse(BaseModel):
     turns: list[HistoryTurn]
 
 
+class SessionSummary(BaseModel):
+    """One entry in the chat-history sidebar list."""
+    session_id: str
+    title: str                      # derived from the first user question
+    created_at: str | None
+    last_active: str | None
+    message_count: int
+
+
+class SessionListResponse(BaseModel):
+    sessions: list[SessionSummary]
+
+
+class DeleteSessionResponse(BaseModel):
+    session_id: str
+    deleted: bool
+
+
 # ── Endpoints ──────────────────────────────────────────────────────────────────
 
 @router.post("", response_model=CreateSessionResponse, status_code=201)
@@ -82,6 +105,61 @@ async def create_new_session(
         return CreateSessionResponse(session_id=session_id)
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Failed to create session: {exc}") from exc
+
+
+@router.get("", response_model=SessionListResponse)
+async def get_all_sessions(
+    user_id: str | None = None,
+    limit: int = 50,
+    db: AsyncSession = Depends(get_db),
+) -> SessionListResponse:
+    """
+    List past conversations for the chat-history sidebar (like ChatGPT/Claude).
+
+    Query params:
+        user_id (optional) — filter to a specific user's sessions
+        limit (int, default 50) — max number of sessions to return
+
+    Returns sessions ordered by most-recently-active first. Each entry
+    includes a `title` derived from the session's first user question,
+    so the frontend can render a clickable list without loading full
+    history for every session up front.
+
+    Returns:
+        200  { sessions: [{ session_id, title, created_at, last_active, message_count }, ...] }
+        500  if the database read fails
+    """
+    try:
+        sessions = await list_sessions(db, user_id=user_id, limit=limit)
+        return SessionListResponse(sessions=[SessionSummary(**s) for s in sessions])
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Failed to list sessions: {exc}") from exc
+
+
+@router.delete("/{session_id}", response_model=DeleteSessionResponse)
+async def remove_session(
+    session_id: str,
+    db: AsyncSession = Depends(get_db),
+) -> DeleteSessionResponse:
+    """
+    Delete a session and all its conversation turns / retrieval logs.
+
+    Returns:
+        200  { session_id, deleted: true|false }
+        404  if session_id format is invalid (bad UUID)
+        500  if the database delete fails
+    """
+    try:
+        import uuid
+        uuid.UUID(session_id)
+    except ValueError:
+        raise HTTPException(status_code=404, detail="Invalid session_id format")
+
+    try:
+        deleted = await delete_session(db, session_id)
+        return DeleteSessionResponse(session_id=session_id, deleted=deleted)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Failed to delete session: {exc}") from exc
 
 
 @router.get("/{session_id}/history", response_model=SessionHistoryResponse)

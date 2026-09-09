@@ -1,24 +1,74 @@
 ﻿import { useState, useEffect, useRef, useCallback } from "react";
-import { Settings, ChevronDown, ChevronUp, RotateCcw, Save, ExternalLink, CheckCircle, Clock } from "lucide-react";
-import type { Instructions } from "../api";
-import { saveInstructions, resetInstructions } from "../api";
+import { Settings, ChevronDown, ChevronUp, RotateCcw, Save, ExternalLink, CheckCircle, Clock, MessageSquarePlus, MessageSquare, Trash2, History } from "lucide-react";
+import type { Instructions, SessionSummary } from "../api";
+import { saveInstructions, resetInstructions, listSessions, deleteSession } from "../api";
 
 interface Props {
   instructions: Instructions;
   onInstructionsChange: (i: Instructions) => void;
   collapsed: boolean;
+  currentSessionId: string | null;
+  historyVersion: number;
+  onSelectSession: (sessionId: string) => void;
+  onNewChat: () => void;
 }
 
-const STRATEGIES = ["hybrid", "sparql", "fts", "similarity"] as const;
 const STYLES = ["business", "technical", "concise", "detailed"] as const;
 type SaveStatus = "idle" | "dirty" | "saving" | "saved" | "error";
 
-export function Sidebar({ instructions, onInstructionsChange, collapsed }: Props) {
+export function Sidebar({ instructions, onInstructionsChange, collapsed, currentSessionId, historyVersion, onSelectSession, onNewChat }: Props) {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [draft, setDraft] = useState<Instructions>(instructions);
   const [saveStatus, setSaveStatus] = useState<SaveStatus>("idle");
   const initialized = useRef(false);
   const autoSaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // ── Chat history sidebar list ────────────────────────────────────────────
+  const [sessions, setSessions] = useState<SessionSummary[]>([]);
+  const [sessionsLoading, setSessionsLoading] = useState(false);
+  const [deletingId, setDeletingId] = useState<string | null>(null);
+
+  const refreshSessions = useCallback(async () => {
+    setSessionsLoading(true);
+    try {
+      const list = await listSessions();
+      setSessions(list);
+    } catch {
+      // Non-fatal — history sidebar just stays empty
+    } finally {
+      setSessionsLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    refreshSessions();
+  }, [refreshSessions, historyVersion]);
+
+  const handleDelete = async (e: React.MouseEvent, sessionId: string) => {
+    e.stopPropagation();
+    setDeletingId(sessionId);
+    try {
+      await deleteSession(sessionId);
+      setSessions((prev) => prev.filter((s) => s.session_id !== sessionId));
+    } catch {
+      // ignore — list will self-correct on next refresh
+    } finally {
+      setDeletingId(null);
+    }
+  };
+
+  const formatRelativeTime = (iso: string | null): string => {
+    if (!iso) return "";
+    const diffMs = Date.now() - new Date(iso).getTime();
+    const mins = Math.round(diffMs / 60000);
+    if (mins < 1) return "just now";
+    if (mins < 60) return `${mins}m ago`;
+    const hours = Math.round(mins / 60);
+    if (hours < 24) return `${hours}h ago`;
+    const days = Math.round(hours / 24);
+    if (days < 7) return `${days}d ago`;
+    return new Date(iso).toLocaleDateString();
+  };
 
   useEffect(() => {
     if (!initialized.current && Object.keys(instructions).length > 0) {
@@ -87,9 +137,46 @@ export function Sidebar({ instructions, onInstructionsChange, collapsed }: Props
       </div>
 
       <div className="sidebar__nav">
+        <button className="new-chat-btn" onClick={onNewChat}>
+          <MessageSquarePlus size={15} />
+          New Chat
+        </button>
         <div className="sidebar__description">
           <p>Explore payment domains, business capabilities, rules, and activities using natural language.</p>
         </div>
+      </div>
+
+      <div className="history-section">
+        <div className="history-section__label">
+          <History size={12} /> Chat History
+        </div>
+        {sessionsLoading && sessions.length === 0 ? (
+          <div className="history-empty">Loading...</div>
+        ) : sessions.length === 0 ? (
+          <div className="history-empty">No past conversations yet</div>
+        ) : (
+          <div className="history-list">
+            {sessions.map((s) => (
+              <button
+                key={s.session_id}
+                className={`history-item ${s.session_id === currentSessionId ? "history-item--active" : ""}`}
+                onClick={() => onSelectSession(s.session_id)}
+                title={s.title}
+              >
+                <MessageSquare size={13} className="history-item__icon" />
+                <span className="history-item__title">{s.title}</span>
+                <span className="history-item__time">{formatRelativeTime(s.last_active)}</span>
+                <span
+                  className="history-item__delete"
+                  onClick={(e) => handleDelete(e, s.session_id)}
+                  title="Delete conversation"
+                >
+                  {deletingId === s.session_id ? <Clock size={12} /> : <Trash2 size={12} />}
+                </span>
+              </button>
+            ))}
+          </div>
+        )}
       </div>
 
       <div className="settings-panel">
@@ -111,11 +198,6 @@ export function Sidebar({ instructions, onInstructionsChange, collapsed }: Props
             <span className="settings-label">System Prompt</span>
             <textarea className="settings-textarea settings-textarea--prompt" rows={8} value={draft.system_prompt ?? ""} onChange={(e) => updateDraft({ system_prompt: e.target.value })} placeholder="Enter system prompt for the AI assistant..." />
 
-            <span className="settings-label">Retrieval Strategy</span>
-            <select className="settings-select" value={draft.retrieval_strategy ?? "hybrid"} onChange={(e) => updateDraft({ retrieval_strategy: e.target.value })}>
-              {STRATEGIES.map((s) => <option key={s} value={s}>{s}</option>)}
-            </select>
-
             <span className="settings-label">Answer Style</span>
             <select className="settings-select" value={draft.answer_style ?? "business"} onChange={(e) => updateDraft({ answer_style: e.target.value })}>
               {STYLES.map((s) => <option key={s} value={s}>{s}</option>)}
@@ -124,16 +206,6 @@ export function Sidebar({ instructions, onInstructionsChange, collapsed }: Props
             <label className="settings-toggle-row">
               <span>Strict Ontology Mode</span>
               <input type="checkbox" className="toggle-switch" checked={draft.strict_ontology_mode ?? false} onChange={(e) => updateDraft({ strict_ontology_mode: e.target.checked })} />
-            </label>
-
-            <label className="settings-toggle-row">
-              <span>Show Cypher Queries</span>
-              <input type="checkbox" className="toggle-switch" checked={draft.show_sparql_queries ?? true} onChange={(e) => updateDraft({ show_sparql_queries: e.target.checked })} />
-            </label>
-
-            <label className="settings-toggle-row">
-              <span>Show Evidence</span>
-              <input type="checkbox" className="toggle-switch" checked={draft.show_raw_evidence ?? true} onChange={(e) => updateDraft({ show_raw_evidence: e.target.checked })} />
             </label>
 
             <span className="settings-label">Confidence Threshold: {(draft.confidence_threshold ?? 0.3).toFixed(2)}</span>

@@ -1,4 +1,6 @@
-﻿const HINTS = [
+﻿import { Network, MessagesSquare, Sparkles } from "lucide-react";
+
+const HINTS = [
   "What are business functions in Payment Processing?",
   "List all supporting domains",
   "What rules govern payment capture?",
@@ -28,21 +30,21 @@ export function EmptyState({ onHint }: { onHint: (h: string) => void }) {
       <h2 className="empty-state__title">Payment Reference Architecture</h2>
       <p className="empty-state__subtitle">
         Ask questions about payment domains, business functions, rules, and activities.
-        Get instant answers grounded in the PRA knowledge graph &mdash; powered by SPARQL, full-text search, and AI.
+        Get instant answers grounded in the PRA knowledge graph &mdash; powered by Neo4j and AI.
       </p>
       <div className="empty-state__features">
-        <div className="feature-card">
-          <div className="feature-card__icon">🔗</div>
-          <div className="feature-card__label">SPARQL Graph</div>
-        </div>
-        <div className="feature-card">
-          <div className="feature-card__icon">🔍</div>
-          <div className="feature-card__label">Full-Text Search</div>
-        </div>
-        <div className="feature-card">
-          <div className="feature-card__icon">🧠</div>
-          <div className="feature-card__label">Semantic Similarity</div>
-        </div>
+        <button className="feature-card" onClick={() => onHint("What are business functions in Payment Processing?")}>
+          <div className="feature-card__icon feature-card__icon--graph"><Network size={20} /></div>
+          <div className="feature-card__label">Knowledge Graph</div>
+        </button>
+        <button className="feature-card" onClick={() => onHint("Explain the payment routing engine, and what depends on it?")}>
+          <div className="feature-card__icon feature-card__icon--context"><MessagesSquare size={20} /></div>
+          <div className="feature-card__label">Conversational Context</div>
+        </button>
+        <button className="feature-card" onClick={() => onHint("Summarize the key rules governing payment capture.")}>
+          <div className="feature-card__icon feature-card__icon--ai"><Sparkles size={20} /></div>
+          <div className="feature-card__label">AI-Powered Answers</div>
+        </button>
       </div>
       <div className="hint-chips">
         {HINTS.map((h) => (

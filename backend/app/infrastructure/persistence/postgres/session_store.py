@@ -74,6 +74,70 @@ async def increment_message_count(db: AsyncSession, session_id: str) -> None:
         await db.commit()
 
 
+async def list_sessions(
+    db: AsyncSession,
+    user_id: str | None = None,
+    limit: int = 50,
+) -> list[dict[str, Any]]:
+    """
+    Return all sessions (most-recently-active first), each annotated with
+    a `title` derived from the first user question in that session.
+
+    Used by:  GET /session  (chat-history sidebar, like ChatGPT/Claude)
+    """
+    query = select(Session).order_by(Session.last_active.desc()).limit(limit)
+    if user_id is not None:
+        query = query.where(Session.user_id == user_id)
+
+    result = await db.execute(query)
+    sessions = result.scalars().all()
+
+    output: list[dict[str, Any]] = []
+    for s in sessions:
+        # Skip empty sessions (created but never used) — keeps the sidebar clean
+        if not s.message_count:
+            continue
+
+        first_turn_result = await db.execute(
+            select(ConversationTurn)
+            .where(ConversationTurn.session_id == s.session_id, ConversationTurn.role == "user")
+            .order_by(ConversationTurn.timestamp.asc())
+            .limit(1)
+        )
+        first_turn = first_turn_result.scalar_one_or_none()
+        title = (first_turn.raw_content if first_turn else "New conversation").strip()
+        if len(title) > 60:
+            title = title[:57].rstrip() + "..."
+
+        output.append({
+            "session_id": str(s.session_id),
+            "title": title,
+            "created_at": s.created_at.isoformat() if s.created_at else None,
+            "last_active": s.last_active.isoformat() if s.last_active else None,
+            "message_count": s.message_count,
+        })
+    return output
+
+
+async def delete_session(db: AsyncSession, session_id: str) -> bool:
+    """
+    Delete a session and all its conversation turns / retrieval logs
+    (cascade is configured at the FK level — see models.py).
+
+    Used by:  DELETE /session/{session_id}
+    Returns:  True if a row was deleted, False if session_id didn't exist.
+    """
+    result = await db.execute(
+        select(Session).where(Session.session_id == uuid.UUID(session_id))
+    )
+    session = result.scalar_one_or_none()
+    if session is None:
+        return False
+    await db.delete(session)
+    await db.commit()
+    return True
+
+
 # ── Conversation turn operations ───────────────────────────────────────────────
 
 async def save_turn(

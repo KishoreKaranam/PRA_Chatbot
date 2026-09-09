@@ -28,7 +28,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.infrastructure.persistence.postgres.database import get_db
 from app.orchestration.langgraph.graph import get_graph
-from app.orchestration.langgraph.nodes import _get_answer_service, _get_orchestrator
+from app.orchestration.langgraph.nodes import _get_answer_service, _get_orchestrator, node_save_to_db
 from app.orchestration.langgraph.state import PRAState, make_initial_state
 from app.models.schemas import AgentInstructions, ChatRequest, ChatResponse, ConversationTurn, Neo4jGraphEvidence
 from app.infrastructure.configuration.config_service import get_config_service
@@ -159,9 +159,13 @@ async def chat_stream(
     answer_svc = _get_answer_service()
 
     async def event_generator() -> AsyncGenerator[str, None]:
-        # ── Run the graph (all nodes except answer streaming) ─────────────────
+        # ── Run the graph up through validate_evidence only ────────────────────
         # astream() yields a dict of {node_name: partial_state} after each node.
-        # We accumulate state as nodes complete and emit SSE at the right moments.
+        # We stop consuming the generator as soon as validate_evidence has run
+        # (i.e. BEFORE generate_answer executes), so the LLM call never happens
+        # inside the graph. This lets us call answer_svc.generate_stream()
+        # ourselves below for genuine token-by-token streaming, instead of
+        # chunking an already-complete answer after the fact.
 
         accumulated: PRAState = dict(initial_state)  # type: ignore[assignment]
         pipeline_emitted = False
@@ -206,7 +210,8 @@ async def chat_stream(
                         })
                         return   # graph already at END — stop generator
 
-                    # ── After validate_evidence: emit retrieval event ──────────
+                    # ── After validate_evidence: emit retrieval event, then STOP
+                    # consuming the graph so generate_answer never runs here. ───
                     elif node_name == "validate_evidence" and not retrieval_emitted:
                         # Check if validate routed to clarification (no evidence)
                         if accumulated.get("needs_clarification"):
@@ -225,6 +230,13 @@ async def chat_stream(
                             "warning": "No relevant information was found in the knowledge graph." if not modes else None,
                         })
 
+                # Stop pulling more super-steps from the graph as soon as
+                # validate_evidence has completed — this prevents LangGraph
+                # from executing generate_answer (and its non-streaming LLM
+                # call) before we get a chance to stream tokens ourselves.
+                if retrieval_emitted:
+                    break
+
         except Exception as exc:
             logger.error("graph_stream_failed", error=str(exc))
             yield _sse("error", {"detail": str(exc)})
@@ -237,10 +249,7 @@ async def chat_stream(
             })
             return
 
-        # ── Stream answer tokens separately (bypasses graph for true streaming) ─
-        # node_generate_answer already ran non-streaming inside the graph above.
-        # For the stream endpoint we re-run the answer generation in streaming
-        # mode here so the user sees tokens in real time.
+        # ── Stream answer tokens in real time via the LLM's native streaming ───
         rewritten_q   = accumulated.get("rewritten_question", request.question)
         validated_ev  = accumulated.get("validated_evidence", [])
         modes_used    = accumulated.get("retrieval_modes", [])
@@ -249,33 +258,29 @@ async def chat_stream(
         is_followup   = accumulated.get("is_followup", False)
         full_answer   = ""
 
-        # If graph already produced an answer (non-streaming path ran), stream it
-        # character-by-character to keep SSE events consistent.
-        existing_answer: str = accumulated.get("answer", "")
-
-        if existing_answer:
-            # Answer came from node_generate_answer — re-emit as tokens
-            # (chunk into ~20-char pieces to simulate streaming)
-            chunk_size = 20
-            for i in range(0, len(existing_answer), chunk_size):
-                token = existing_answer[i:i + chunk_size]
+        try:
+            async for token in answer_svc.generate_stream(
+                rewritten_q, validated_ev, modes_used, instructions,
+                history=history, intent=intent, is_followup=is_followup,
+            ):
                 full_answer += token
                 yield _sse("token", {"text": token})
-        else:
-            # Generate fresh streaming answer
-            try:
-                async for token in answer_svc.generate_stream(
-                    rewritten_q, validated_ev, modes_used, instructions,
-                    history=history, intent=intent, is_followup=is_followup,
-                ):
-                    full_answer += token
-                    yield _sse("token", {"text": token})
-            except Exception as exc:
-                logger.error("answer_stream_failed", error=str(exc))
-                yield _sse("error", {"detail": str(exc)})
-                return
+        except Exception as exc:
+            logger.error("answer_stream_failed", error=str(exc))
+            yield _sse("error", {"detail": str(exc)})
+            return
 
         confidence = answer_svc._estimate_confidence(validated_ev, modes_used)
+
+        # ── Persist the turn (mirrors node_save_to_db, run manually since we
+        # bypassed the graph's generate_answer → save_to_db tail) ─────────────
+        accumulated["answer"] = full_answer
+        accumulated["confidence"] = confidence or 0.0
+        try:
+            await node_save_to_db(accumulated, {"configurable": {"db": db}})
+        except Exception as exc:
+            logger.warning("stream_save_to_db_failed", error=str(exc))
+
         yield _sse("done", {
             "confidence": confidence,
             "session_id": request.session_id,

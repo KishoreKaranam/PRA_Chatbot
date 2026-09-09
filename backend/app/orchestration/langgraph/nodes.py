@@ -92,18 +92,12 @@ def _get_orchestrator() -> RetrievalOrchestrator:
         from app.infrastructure.retrieval.neo4j.graph_service import Neo4jGraphRetrievalService
         from app.infrastructure.retrieval.neo4j.full_text_service import Neo4jFtsRetrievalService
         from app.infrastructure.retrieval.neo4j.vector_service import Neo4jVectorRetrievalService
-        settings = get_settings()
-        retrieval_backend = settings.retrieval_backend.strip().lower()
         neo4j_client = Neo4jClient()
-        if retrieval_backend == "neo4j":
-            graph_client = None
-            sparql_service = None
-        else:
-            from app.infrastructure.knowledge_graph.graphdb.client import get_graphdb_client
-            from app.infrastructure.retrieval.sparql.service import SparqlRetrievalService
-
-            graph_client = get_graphdb_client()
-            sparql_service = SparqlRetrievalService(graph_client)
+        # SPARQL retrieval is permanently disabled — Neo4j is the sole graph
+        # backend. FTS and similarity remain active (both are Neo4j-backed
+        # depending on FTS_BACKEND/VECTOR_BACKEND settings).
+        graph_client = None
+        sparql_service = None
 
         fts_service = _build_fts_service(
             graph_client,
