@@ -1,0 +1,65 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<title>PRA Chatbot — Architecture Diagram</title>
+<style>
+  body { margin: 0; background: #0b1120; font-family: 'Segoe UI', Arial, sans-serif; display: flex; flex-direction: column; align-items: center; padding: 32px 16px 64px; }
+  h1 { color: #e2e8f0; font-size: 20px; margin-bottom: 4px; }
+  p.sub { color: #94a3b8; font-size: 13px; margin-top: 0; margin-bottom: 20px; }
+  .toolbar { display: flex; gap: 12px; margin-bottom: 20px; }
+  button { background: linear-gradient(135deg,#2563eb,#7c3aed); color: white; border: none; padding: 10px 20px; border-radius: 8px; font-size: 14px; font-weight: 600; cursor: pointer; box-shadow: 0 4px 12px rgba(37,99,235,0.35); }
+  button:hover { opacity: 0.92; }
+  .frame { background: #0f172a; border-radius: 14px; box-shadow: 0 10px 40px rgba(0,0,0,0.5); overflow: hidden; max-width: 1620px; width: 100%; }
+  img, object { width: 100%; height: auto; display: block; }
+</style>
+</head>
+<body>
+  <h1>Payment Reference Architecture (PRA) Chatbot</h1>
+  <p class="sub">Executive architecture overview — downloadable as SVG (vector) or PNG (image)</p>
+  <div class="toolbar">
+    <button id="downloadSvg">⬇ Download SVG</button>
+    <button id="downloadPng">⬇ Download PNG</button>
+  </div>
+  <div class="frame">
+    <img id="diagram" src="PRA_Chatbot_Architecture.svg" alt="PRA Chatbot Architecture Diagram" />
+  </div>
+
+  <script>
+    document.getElementById('downloadSvg').addEventListener('click', () => {
+      const a = document.createElement('a');
+      a.href = 'PRA_Chatbot_Architecture.svg';
+      a.download = 'PRA_Chatbot_Architecture.svg';
+      a.click();
+    });
+
+    document.getElementById('downloadPng').addEventListener('click', async () => {
+      const img = document.getElementById('diagram');
+      const resp = await fetch(img.src);
+      const svgText = await resp.text();
+      const svgBlob = new Blob([svgText], { type: 'image/svg+xml;charset=utf-8' });
+      const url = URL.createObjectURL(svgBlob);
+
+      const scale = 2; // export at 2x resolution for crisp presentations
+      const image = new Image();
+      image.onload = () => {
+        const canvas = document.createElement('canvas');
+        canvas.width = image.width * scale;
+        canvas.height = image.height * scale;
+        const ctx = canvas.getContext('2d');
+        ctx.scale(scale, scale);
+        ctx.drawImage(image, 0, 0);
+        URL.revokeObjectURL(url);
+
+        canvas.toBlob((blob) => {
+          const a = document.createElement('a');
+          a.href = URL.createObjectURL(blob);
+          a.download = 'PRA_Chatbot_Architecture.png';
+          a.click();
+        }, 'image/png');
+      };
+      image.src = url;
+    });
+  </script>
+</body>
+</html>
