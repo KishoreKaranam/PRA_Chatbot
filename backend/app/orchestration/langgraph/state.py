@@ -151,6 +151,9 @@ class PRAState(TypedDict, total=False):
     answer:               str                    # full LLM response
     confidence:           float                  # 0.0 – 1.0
 
+    # ── Stage 7: Output validation / grounding review ─────────────────────────
+    grounding_report:     Any                    # GroundingReport | None
+
 
 # ── Safe default factory ───────────────────────────────────────────────────────
 
@@ -208,4 +211,7 @@ def make_initial_state(
         # Stage 6 — populated by answer_node
         answer="",
         confidence=0.0,
+
+        # Stage 7 — populated by validate_output node
+        grounding_report=None,
     )

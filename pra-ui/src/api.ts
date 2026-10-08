@@ -63,6 +63,24 @@ export interface Neo4jGraphEvidence {
 
 export type Evidence = SparqlEvidence | FtsEvidence | SimilarityEvidence | Neo4jGraphEvidence;
 
+export interface GroundingClaim {
+  claim: string;
+  supported: boolean;
+  evidence_refs: string[];
+  note: string;
+}
+
+export interface GroundingReport {
+  grounding_score: number;        // 0.0 - 1.0
+  grounded_percentage: number;    // 0 - 100
+  total_claims: number;
+  supported_claims: number;
+  verdict: string;                // high | moderate | low | unverified
+  summary: string;
+  claims: GroundingClaim[];
+  method: string;                 // llm | lexical | none
+}
+
 export interface ChatResponse {
   question: string;
   rewritten_question: string;
@@ -75,6 +93,7 @@ export interface ChatResponse {
   warning?: string | null;
   clarification_needed?: string | null;
   session_id?: string | null;   // echoed back from backend
+  grounding?: GroundingReport | null;  // output review: % grounded in evidence
 }
 
 export interface ConversationTurn {
@@ -154,6 +173,7 @@ export interface StreamCallbacks {
   onClarification: (message: string) => void;
   onRetrieval: (data: { retrieval_modes_used: string[]; evidence: unknown[]; warning?: string | null }) => void;
   onToken: (text: string) => void;
+  onGrounding: (report: GroundingReport) => void;
   onDone: (data: { confidence: number | null; session_id: string | null }) => void;
   onError: (error: string) => void;
 }
@@ -308,6 +328,7 @@ export async function sendQuestionStream(
           case 'clarification': callbacks.onClarification(data.message); break;
           case 'retrieval':     callbacks.onRetrieval(data); break;
           case 'token':         callbacks.onToken(data.text); break;
+          case 'grounding':     callbacks.onGrounding(data); break;
           case 'done':          callbacks.onDone(data); break;
           case 'error':         callbacks.onError(data.detail); break;
         }

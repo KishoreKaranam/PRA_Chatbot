@@ -128,6 +128,48 @@ class Neo4jGraphEvidence(BaseModel):
     result_count: int = 0
 
 
+# ── Grounding / output review ─────────────────────────────────────────────────
+
+class GroundingClaim(BaseModel):
+    """A single atomic claim extracted from the generated answer and its verdict."""
+    claim: str = Field(..., description="The atomic statement taken from the answer")
+    supported: bool = Field(..., description="True if backed by retrieved evidence")
+    evidence_refs: list[str] = Field(
+        default_factory=list,
+        description="Labels/URIs of the evidence items supporting this claim",
+    )
+    note: str = Field(default="", description="Short rationale for the verdict")
+
+
+class GroundingReport(BaseModel):
+    """
+    Result of the output validation / review layer.
+
+    Scores what fraction of the generated answer is grounded in the retrieved
+    document evidence, so the UI can show an "X% evidence-based" indicator.
+    """
+    grounding_score: float = Field(
+        default=0.0, ge=0.0, le=1.0,
+        description="Fraction (0.0-1.0) of claims supported by evidence",
+    )
+    grounded_percentage: int = Field(
+        default=0, ge=0, le=100,
+        description="grounding_score expressed as a 0-100 percentage for display",
+    )
+    total_claims: int = 0
+    supported_claims: int = 0
+    verdict: str = Field(
+        default="unverified",
+        description="high | moderate | low | unverified",
+    )
+    summary: str = Field(default="", description="Human-readable review summary")
+    claims: list[GroundingClaim] = Field(default_factory=list)
+    method: str = Field(
+        default="none",
+        description="How the score was derived: llm | lexical | none",
+    )
+
+
 # ── Conversation memory ───────────────────────────────────────────────────────
 
 class ConversationTurn(BaseModel):
@@ -168,4 +210,5 @@ class ChatResponse(BaseModel):
     warning: str | None = None
     clarification_needed: str | None = None   # non-None means ask user this
     session_id: str | None = None             # echo back so frontend can store it
+    grounding: GroundingReport | None = None  # output review: % grounded in evidence
     # updated_history removed — history now lives entirely in PostgreSQL

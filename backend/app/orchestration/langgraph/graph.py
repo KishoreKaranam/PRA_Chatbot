@@ -67,6 +67,7 @@ from app.orchestration.langgraph.nodes import (
     node_retrieve,
     node_save_to_db,
     node_validate_evidence,
+    node_validate_output,
 )
 from app.orchestration.langgraph.state import PRAState
 from app.core.log_config import get_logger
@@ -83,6 +84,7 @@ N_CLARIFICATION_END    = TO_CLARIFICATION          # "clarification"
 N_RETRIEVE             = TO_RETRIEVE               # "retrieve"
 N_VALIDATE             = "validate_evidence"
 N_GENERATE             = TO_GENERATE               # "generate_answer"
+N_VALIDATE_OUTPUT      = "validate_output"
 N_SAVE_DB              = "save_to_db"
 
 
@@ -129,6 +131,7 @@ def build_graph() -> StateGraph:
     graph.add_node(N_RETRIEVE,           node_retrieve)
     graph.add_node(N_VALIDATE,           node_validate_evidence)
     graph.add_node(N_GENERATE,           node_generate_answer)
+    graph.add_node(N_VALIDATE_OUTPUT,    node_validate_output)
     graph.add_node(N_SAVE_DB,            node_save_to_db)
 
     # ── Linear edges (always run in order) ────────────────────────────────────
@@ -168,9 +171,10 @@ def build_graph() -> StateGraph:
     # Both clarification branches converge here and stop.
     graph.add_edge(N_CLARIFICATION_END, END)
 
-    # ── Linear tail: generate → save → END ───────────────────────────────────
-    graph.add_edge(N_GENERATE, N_SAVE_DB)
-    graph.add_edge(N_SAVE_DB,  END)
+    # ── Linear tail: generate → validate_output → save → END ─────────────────
+    graph.add_edge(N_GENERATE,        N_VALIDATE_OUTPUT)
+    graph.add_edge(N_VALIDATE_OUTPUT, N_SAVE_DB)
+    graph.add_edge(N_SAVE_DB,         END)
 
     compiled = graph.compile()
     logger.info("pra_graph_compiled")

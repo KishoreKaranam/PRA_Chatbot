@@ -33,6 +33,9 @@ export default function App() {
   const [historyLoading, setHistoryLoading] = useState(false);
 
   const bottomRef = useRef<HTMLDivElement>(null);
+  const messagesRef = useRef<HTMLDivElement>(null);
+  const prevMsgCount = useRef(0);
+  const stickToBottom = useRef(true);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const streamRef = useRef<ChatResponse | null>(null);
   const abortRef = useRef<AbortController | null>(null);
@@ -57,8 +60,60 @@ export default function App() {
   }, []);
 
   useEffect(() => {
+    const container = messagesRef.current;
+    const added = messages.length !== prevMsgCount.current;
+    prevMsgCount.current = messages.length;
+
+    // While a reply streams in (same message count) only follow the bottom if
+    // the user is already near it, and use an instant jump instead of a smooth
+    // animation — restarting a smooth scroll on every token is what glitches.
+    if (container && !added) {
+      const nearBottom =
+        container.scrollHeight - container.scrollTop - container.clientHeight < 120;
+      if (!nearBottom) return;
+      bottomRef.current?.scrollIntoView({ behavior: "auto" });
+      return;
+    }
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages, loading]);
+
+  // Keep the view pinned to the bottom when content height changes *after* the
+  // message state settled — e.g. a Mermaid diagram that renders asynchronously
+  // once its source is complete. Without this the late reflow pushes the last
+  // message upward and the chat appears to "jump". Only follows when the user
+  // was already at the bottom, so manual scroll-up is respected.
+  useEffect(() => {
+    const container = messagesRef.current;
+    if (!container) return;
+
+    const pin = () => {
+      if (stickToBottom.current) container.scrollTop = container.scrollHeight;
+    };
+
+    const ro = new ResizeObserver(pin);
+    const observeChildren = () => {
+      ro.disconnect();
+      for (const child of Array.from(container.children)) ro.observe(child);
+    };
+    observeChildren();
+
+    const mo = new MutationObserver(observeChildren);
+    mo.observe(container, { childList: true });
+
+    return () => {
+      ro.disconnect();
+      mo.disconnect();
+    };
+  }, []);
+
+  // Track whether the user is parked near the bottom so async growth only
+  // auto-scrolls when they haven't scrolled up to read earlier content.
+  const handleMessagesScroll = useCallback(() => {
+    const el = messagesRef.current;
+    if (!el) return;
+    stickToBottom.current =
+      el.scrollHeight - el.scrollTop - el.clientHeight < 120;
+  }, []);
 
   const submit = useCallback(
     async (question: string) => {
@@ -86,6 +141,7 @@ export default function App() {
         confidence: null,
         warning: null,
         clarification_needed: null,
+        grounding: null,
       };
       streamRef.current = streamResponse;
 
@@ -131,6 +187,12 @@ export default function App() {
             onToken: (text) => {
               if (!streamRef.current) return;
               streamRef.current.answer += text;
+              snapshot();
+            },
+            // Output review layer — % of answer grounded in evidence
+            onGrounding: (report) => {
+              if (!streamRef.current) return;
+              streamRef.current.grounding = report;
               snapshot();
             },
             // Stage 7 — history now lives in DB; nothing to update client-side
@@ -278,7 +340,7 @@ export default function App() {
             )}
           </div>
         </header>
-        <div className="messages-container">
+        <div className="messages-container" ref={messagesRef} onScroll={handleMessagesScroll}>
           {historyLoading ? (
             <div className="loading-indicator">
               <div className="typing-dots"><span /><span /><span /></div>

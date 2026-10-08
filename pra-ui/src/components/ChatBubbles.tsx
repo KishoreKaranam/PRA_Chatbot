@@ -1,8 +1,11 @@
-﻿import { useState } from "react";
-import { Copy, Check, HelpCircle, RotateCcw } from "lucide-react";
+﻿import { memo, useState } from "react";
+import { Copy, Check, HelpCircle, RotateCcw, ShieldCheck, ChevronDown } from "lucide-react";
 import ReactMarkdown from "react-markdown";
+import type { Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import type { ChatResponse } from "../api";
+import type { GroundingReport } from "../api";
+import { MermaidDiagram } from "./MermaidDiagram";
 
 interface UserBubbleProps { text: string; }
 interface BotBubbleProps { msg: ChatResponse; streaming?: boolean; }
@@ -15,6 +18,7 @@ const INTENT_CONFIG: Record<string, { label: string; emoji: string; cls: string 
   comparison:  { label: "Comparison",  emoji: "⚖️", cls: "intent-badge--comparison"  },
   exploratory: { label: "Exploratory", emoji: "🔭", cls: "intent-badge--exploratory" },
   vague:       { label: "Clarifying",  emoji: "❓", cls: "intent-badge--vague"       },
+  diagram:     { label: "Diagram",     emoji: "📊", cls: "intent-badge--diagram"     },
 };
 
 function IntentBadge({ intent }: { intent: string }) {
@@ -26,20 +30,77 @@ function IntentBadge({ intent }: { intent: string }) {
   );
 }
 
+// ── Grounding / output review badge ─────────────────────────────────────────
+
+const GROUNDING_CONFIG: Record<string, { label: string; color: string }> = {
+  high:       { label: "Well grounded",   color: "#16a34a" },
+  moderate:   { label: "Partly grounded", color: "#d97706" },
+  low:        { label: "Weakly grounded", color: "#dc2626" },
+  unverified: { label: "Unverified",      color: "#6b7280" },
+};
+
+function GroundingBadge({ report }: { report: GroundingReport }) {
+  const [open, setOpen] = useState(false);
+  const cfg = GROUNDING_CONFIG[report.verdict] ?? GROUNDING_CONFIG.unverified;
+  const pct = Math.round(report.grounded_percentage);
+
+  return (
+    <div className="grounding">
+      <button
+        className="grounding__badge"
+        onClick={() => setOpen((o) => !o)}
+        title={report.summary}
+        style={{ ["--grounding-color" as string]: cfg.color }}
+      >
+        <ShieldCheck size={12} />
+        <span className="grounding__pct">{pct}% evidence-based</span>
+        <span className="grounding__verdict">· {cfg.label}</span>
+        <span className="grounding__track">
+          <span className="grounding__fill" style={{ width: `${pct}%`, background: cfg.color }} />
+        </span>
+        <ChevronDown
+          size={12}
+          style={{ transform: open ? "rotate(180deg)" : "none", transition: "transform .2s" }}
+        />
+      </button>
+
+      {open && (
+        <div className="grounding__details">
+          {report.summary && <p className="grounding__summary">{report.summary}</p>}
+          <p className="grounding__stat">
+            {report.supported_claims} of {report.total_claims} claims supported
+            {report.method === "lexical" && " · estimated"}
+          </p>
+          {report.claims.length > 0 && (
+            <ul className="grounding__claims">
+              {report.claims.map((c, i) => (
+                <li key={i} className={c.supported ? "is-supported" : "is-unsupported"}>
+                  <span className="grounding__mark">{c.supported ? "✓" : "✕"}</span>
+                  <span>{c.claim}</span>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ── User bubble ───────────────────────────────────────────────────────────────
 
-export function UserBubble({ text }: UserBubbleProps) {
+export const UserBubble = memo(function UserBubble({ text }: UserBubbleProps) {
   return (
     <div className="message-row message-row--user">
       <div className="bubble bubble--user">{text}</div>
       <div className="message-avatar message-avatar--user">👤</div>
     </div>
   );
-}
+});
 
 // ── Bot bubble ────────────────────────────────────────────────────────────────
 
-export function BotBubble({ msg, streaming }: BotBubbleProps) {
+export const BotBubble = memo(function BotBubble({ msg, streaming }: BotBubbleProps) {
   const [copied, setCopied] = useState(false);
   const isClarification = Boolean(msg.clarification_needed);
   const rewrittenDiffers =
@@ -51,6 +112,37 @@ export function BotBubble({ msg, streaming }: BotBubbleProps) {
     await navigator.clipboard.writeText(msg.answer);
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
+  };
+
+  // Render ```mermaid fenced blocks as downloadable pictures; all other
+  // code blocks fall through to the default rendering.
+  const markdownComponents: Components = {
+    // Unwrap the <pre> around a mermaid block so the rendered SVG <div> is not
+    // invalidly nested inside a <pre>. Non-mermaid code keeps its <pre>.
+    pre({ node, children }) {
+      const child = node?.children?.[0];
+      const cls =
+        child && child.type === "element" ? child.properties?.className : undefined;
+      const isMermaid = Array.isArray(cls) && cls.includes("language-mermaid");
+      if (isMermaid) return <>{children}</>;
+      return <pre>{children}</pre>;
+    },
+    code({ className, children, ...props }) {
+      const match = /language-mermaid/.test(className || "");
+      if (match) {
+        return (
+          <MermaidDiagram
+            code={String(children).replace(/\n$/, "")}
+            streaming={streaming}
+          />
+        );
+      }
+      return (
+        <code className={className} {...props}>
+          {children}
+        </code>
+      );
+    },
   };
 
   return (
@@ -84,7 +176,7 @@ export function BotBubble({ msg, streaming }: BotBubbleProps) {
           {msg.warning && !isClarification && (
             <div className="warning-banner">⚠️ {msg.warning}</div>
           )}
-          <ReactMarkdown remarkPlugins={[remarkGfm]}>{msg.answer}</ReactMarkdown>
+          <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>{msg.answer}</ReactMarkdown>
           {streaming && !isClarification && <span className="streaming-cursor" aria-hidden="true" />}
 
           {/* ── Meta row (copy) ─────────────────────────────────────────── */}
@@ -96,7 +188,12 @@ export function BotBubble({ msg, streaming }: BotBubbleProps) {
             </div>
           )}
         </div>
+
+        {/* ── Output review: % grounded in evidence ───────────────────────── */}
+        {!isClarification && !streaming && msg.grounding && msg.grounding.method !== "none" && (
+          <GroundingBadge report={msg.grounding} />
+        )}
       </div>
     </div>
   );
-}
+});

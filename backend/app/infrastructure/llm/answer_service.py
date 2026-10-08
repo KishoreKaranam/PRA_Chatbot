@@ -8,11 +8,12 @@ Supports both full-response and streaming modes.
 from __future__ import annotations
 
 from typing import AsyncGenerator
+import json
 import re
 from math import isfinite
 from openai import AsyncOpenAI, AsyncAzureOpenAI
 import anthropic
-import httpx
+import httpx  # anthropic SDK expects an httpx.AsyncClient for custom http_client
 
 from app.models.schemas import (
     AgentInstructions,
@@ -21,6 +22,8 @@ from app.models.schemas import (
     FtsEvidence,
     SimilarityEvidence,
     Neo4jGraphEvidence,
+    GroundingClaim,
+    GroundingReport,
 )
 from app.core.settings import get_settings
 from app.core.log_config import get_logger
@@ -28,6 +31,10 @@ from app.prompts.answer import (
     STYLE_INSTRUCTIONS,
     build_current_question_message,
     build_system_prompt,
+)
+from app.prompts.grounding import (
+    GROUNDING_SYSTEM_PROMPT,
+    build_grounding_user_message,
 )
 
 logger = get_logger(__name__)
@@ -67,15 +74,11 @@ class AnswerGenerationService:
                 deployment=self._model,
             )
         elif self._provider == "azure_anthropic":
-            # ── Claude via Azure AI Foundry — uses the native Anthropic Python
-            # SDK (confirmed by resource owner), pointed at the Foundry
-            # endpoint. Azure's gateway expects the "api-key" header in
-            # addition to the SDK's default "x-api-key".
-            self._anthropic_client = anthropic.AsyncAnthropic(
+            # ── Claude via Azure AI Foundry — uses the Anthropic SDK's dedicated
+            # Foundry client, pointed at the resource's "/anthropic" endpoint.
+            self._anthropic_client = anthropic.AsyncAnthropicFoundry(
                 api_key=settings.azure_ai_api_key,
                 base_url=settings.azure_ai_endpoint.rstrip("/"),
-                default_headers={"api-key": settings.azure_ai_api_key},
-                default_query={"api-version": settings.azure_ai_api_version},
                 http_client=httpx.AsyncClient(verify=False),
             )
             self._model = settings.azure_ai_model
@@ -233,6 +236,210 @@ class AnswerGenerationService:
             async for chunk in response:
                 if chunk.choices and chunk.choices[0].delta.content:
                     yield chunk.choices[0].delta.content
+
+    # ── Output validation / grounding review ──────────────────────────────────
+
+    async def review_grounding(
+        self,
+        answer: str,
+        evidence: list,
+        modes_used: list[str],
+        instructions: AgentInstructions,
+    ) -> GroundingReport:
+        """
+        Validate a generated answer against the retrieved evidence and report
+        what fraction of it is grounded in that evidence.
+
+        Uses the LLM as a strict reviewer (claim-by-claim entailment). Falls back
+        to a deterministic lexical-overlap estimate if the LLM call or JSON
+        parsing fails, so the layer never breaks the response.
+        """
+        answer = (answer or "").strip()
+        context = self._build_context(evidence, instructions)
+
+        # No answer, or nothing was retrieved → nothing to ground against.
+        if not answer:
+            return GroundingReport(summary="No answer to review.", method="none")
+        if not context.strip():
+            return GroundingReport(
+                grounding_score=0.0,
+                grounded_percentage=0,
+                total_claims=0,
+                supported_claims=0,
+                verdict="low",
+                summary="No document evidence was retrieved; the answer is not grounded in sources.",
+                method="none",
+            )
+
+        try:
+            raw = await self._call_reviewer(answer, context)
+            report = self._parse_grounding(raw)
+            if report is not None:
+                logger.info(
+                    "grounding_review_ok",
+                    score=report.grounding_score,
+                    supported=report.supported_claims,
+                    total=report.total_claims,
+                    method="llm",
+                )
+                return report
+        except Exception as exc:
+            logger.warning("grounding_review_llm_failed", error=str(exc))
+
+        # Deterministic fallback.
+        report = self._lexical_grounding(answer, context)
+        logger.info(
+            "grounding_review_fallback",
+            score=report.grounding_score,
+            method="lexical",
+        )
+        return report
+
+    async def _call_reviewer(self, answer: str, context: str) -> str:
+        """Run the reviewer LLM pass and return its raw text output."""
+        user_message = build_grounding_user_message(answer, context)
+
+        if self._provider in ("anthropic", "azure_anthropic"):
+            response = await self._anthropic_client.messages.create(
+                model=self._model,
+                max_tokens=min(self._max_tokens, 2000),
+                system=GROUNDING_SYSTEM_PROMPT,
+                messages=[{"role": "user", "content": user_message}],
+            )
+            return self._extract_text_from_content(response.content)
+
+        response = await self._client.chat.completions.create(
+            model=self._model,
+            messages=[
+                {"role": "system", "content": GROUNDING_SYSTEM_PROMPT},
+                {"role": "user", "content": user_message},
+            ],
+            max_completion_tokens=min(self._max_tokens, 2000),
+        )
+        return response.choices[0].message.content or ""
+
+    @staticmethod
+    def _extract_json(text: str) -> dict | None:
+        """Extract the first JSON object from an LLM response (tolerates fences/prose)."""
+        if not text:
+            return None
+        # Strip common ```json ... ``` fences.
+        fenced = re.search(r"```(?:json)?\s*(\{.*\})\s*```", text, re.DOTALL)
+        candidate = fenced.group(1) if fenced else text
+        start = candidate.find("{")
+        end = candidate.rfind("}")
+        if start == -1 or end == -1 or end <= start:
+            return None
+        try:
+            return json.loads(candidate[start : end + 1])
+        except (json.JSONDecodeError, ValueError):
+            return None
+
+    @classmethod
+    def _parse_grounding(cls, raw: str) -> GroundingReport | None:
+        """Convert the reviewer's JSON into a GroundingReport."""
+        data = cls._extract_json(raw)
+        if not isinstance(data, dict):
+            return None
+
+        raw_claims = data.get("claims")
+        if not isinstance(raw_claims, list):
+            return None
+
+        claims: list[GroundingClaim] = []
+        for item in raw_claims:
+            if not isinstance(item, dict):
+                continue
+            text = str(item.get("claim", "")).strip()
+            if not text:
+                continue
+            refs = item.get("evidence_refs") or []
+            if not isinstance(refs, list):
+                refs = [str(refs)]
+            claims.append(
+                GroundingClaim(
+                    claim=text,
+                    supported=bool(item.get("supported", False)),
+                    evidence_refs=[str(r) for r in refs],
+                    note=str(item.get("note", "")).strip(),
+                )
+            )
+
+        total = len(claims)
+        supported = sum(1 for c in claims if c.supported)
+        score = (supported / total) if total else 0.0
+
+        return GroundingReport(
+            grounding_score=round(score, 4),
+            grounded_percentage=round(score * 100),
+            total_claims=total,
+            supported_claims=supported,
+            verdict=cls._verdict(score, total),
+            summary=str(data.get("summary", "")).strip() or cls._default_summary(score, supported, total),
+            claims=claims,
+            method="llm",
+        )
+
+    def _lexical_grounding(self, answer: str, context: str) -> GroundingReport:
+        """
+        Fallback: sentence-level lexical overlap between the answer and evidence.
+
+        A sentence counts as grounded when a meaningful share of its content
+        words also appear in the evidence context. Rough, but deterministic.
+        """
+        context_words = set(re.findall(r"[a-z0-9]{3,}", context.lower()))
+        sentences = [s.strip() for s in re.split(r"(?<=[.!?])\s+", answer) if len(s.strip()) > 15]
+
+        claims: list[GroundingClaim] = []
+        for sentence in sentences:
+            words = set(re.findall(r"[a-z0-9]{3,}", sentence.lower()))
+            if not words:
+                continue
+            overlap = len(words & context_words) / len(words)
+            supported = overlap >= 0.5
+            claims.append(
+                GroundingClaim(
+                    claim=sentence,
+                    supported=supported,
+                    evidence_refs=[],
+                    note=f"lexical overlap {overlap:.0%}",
+                )
+            )
+
+        total = len(claims)
+        supported = sum(1 for c in claims if c.supported)
+        score = (supported / total) if total else 0.0
+
+        return GroundingReport(
+            grounding_score=round(score, 4),
+            grounded_percentage=round(score * 100),
+            total_claims=total,
+            supported_claims=supported,
+            verdict=self._verdict(score, total),
+            summary=self._default_summary(score, supported, total)
+            + " (estimated via lexical overlap; reviewer model unavailable)",
+            claims=claims,
+            method="lexical",
+        )
+
+    @staticmethod
+    def _verdict(score: float, total: int) -> str:
+        if total == 0:
+            return "unverified"
+        if score >= 0.8:
+            return "high"
+        if score >= 0.5:
+            return "moderate"
+        return "low"
+
+    @staticmethod
+    def _default_summary(score: float, supported: int, total: int) -> str:
+        if total == 0:
+            return "No verifiable claims were found in the answer."
+        return (
+            f"{supported} of {total} claims ({score:.0%}) are supported by the "
+            "retrieved document evidence."
+        )
 
     def _clean_answer(self, answer: str) -> str:
         """Defensively remove any internal reasoning sections from the final answer."""

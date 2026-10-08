@@ -18,7 +18,7 @@ import re
 from typing import Literal
 
 import anthropic
-import httpx
+import httpx  # anthropic SDK expects an httpx.AsyncClient for custom http_client
 
 from app.models.schemas import (
     AgentInstructions,
@@ -57,11 +57,9 @@ class ConversationPipeline:
             self._fast_model = "claude-haiku-4-5"
             self._main_model = settings.anthropic_model
         elif self._provider == "azure_anthropic":
-            self._client = anthropic.AsyncAnthropic(
+            self._client = anthropic.AsyncAnthropicFoundry(
                 api_key=settings.azure_ai_api_key,
                 base_url=settings.azure_ai_endpoint.rstrip("/"),
-                default_headers={"api-key": settings.azure_ai_api_key},
-                default_query={"api-version": settings.azure_ai_api_version},
                 http_client=httpx.AsyncClient(verify=False),
             )
             # No separate cheap model on Foundry deployment — reuse the main model

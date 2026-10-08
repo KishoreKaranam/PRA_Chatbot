@@ -34,7 +34,7 @@ import re
 from typing import Any
 
 import anthropic
-import httpx
+import httpx  # anthropic SDK expects an httpx.AsyncClient for custom http_client
 from langchain_core.runnables import RunnableConfig
 from app.core.log_config import get_logger
 from app.core.settings import get_settings
@@ -217,11 +217,9 @@ def _get_haiku_client():
 
     if provider == "azure_anthropic":
         if _haiku_client_azure is None:
-            _haiku_client_azure = anthropic.AsyncAnthropic(
+            _haiku_client_azure = anthropic.AsyncAnthropicFoundry(
                 api_key=settings.azure_ai_api_key,
                 base_url=settings.azure_ai_endpoint.rstrip("/"),
-                default_headers={"api-key": settings.azure_ai_api_key},
-                default_query={"api-version": settings.azure_ai_api_version},
                 http_client=httpx.AsyncClient(verify=False),
             )
         return _haiku_client_azure, settings.azure_ai_model, "azure_anthropic"
@@ -425,6 +423,7 @@ async def node_classify_intent(state: PRAState) -> dict:
     Rules (evaluated in order — first match wins):
       len < 3 words                             → vague
       bare pronoun/reference with no noun       → vague
+      contains "diagram/flowchart/visualise…"   → diagram
       starts with "what is/are/define/explain"  → definition
       contains "list/enumerate/all/how many"    → list
       contains "compare/vs/versus/difference"   → comparison
@@ -433,6 +432,39 @@ async def node_classify_intent(state: PRAState) -> dict:
     Writes: intent 
     """
     q = state.get("rewritten_question", state.get("raw_question", "")).lower().strip()
+
+    # Diagram — user explicitly wants a visual/graphical representation.
+    # Checked FIRST (before the length/vague gates) so short but explicit
+    # requests like "draw architecture", "architecture diagram" or
+    # "generate architecture" are still routed to the Mermaid-rendering answer
+    # path instead of being treated as too-short / vague.
+    # Covers three request families: generic visualisation, architecture /
+    # structure, and process / workflow. Ordinary questions that merely contain
+    # the word "process" (e.g. "explain the process") are NOT matched — a visual
+    # cue or an explicit diagram-type noun is required.
+    if any(p in q for p in (
+        # Generic visualisation cues
+        "diagram", "flowchart", "flow chart", "flow-chart",
+        "visualise", "visualize", "visual representation", "mermaid",
+        "as a chart", "as a graph", "draw ", "sketch ", "illustrate",
+        "picture of", "show me a diagram", "chart of",
+        # Architecture / structure
+        "architecture", "architectural", "block diagram", "component diagram",
+        "topology", "map of", "layout of",
+        # Process / workflow
+        "process flow", "process diagram", "workflow", "work flow",
+        "sequence diagram", "data flow", "swimlane", "state diagram",
+        "pipeline diagram", "steps diagram",
+    )):
+        return {"intent": "diagram"}
+
+    # Typo-tolerant catch for "architecture" / "architectural" and common
+    # misspellings (e.g. "archietecture", "architechture", "architecure",
+    # "arcitecture"). The substring list above is spelling-sensitive, so a
+    # misspelled architecture request would otherwise fall through to a
+    # plain-text answer instead of a diagram.
+    if re.search(r"\barc\w*ur(?:e|al)", q):
+        return {"intent": "diagram"}
 
     # Too short
     if len(q.split()) < 3:
@@ -667,7 +699,50 @@ async def node_generate_answer(state: PRAState) -> dict:
 
 
 # ════════════════════════════════════════════════════════════════════════════════
-# Node 8 — node_save_to_db
+# Node 8 — node_validate_output (grounding review layer)
+# ════════════════════════════════════════════════════════════════════════════════
+
+async def node_validate_output(state: PRAState) -> dict:
+    """
+    Validate and review the generated answer against the retrieved evidence.
+
+    Produces a GroundingReport estimating what percentage of the answer is
+    actually supported by the document evidence (LLM-as-judge, with a
+    deterministic lexical fallback). Runs after generate_answer, before persistence.
+
+    Writes: grounding_report
+    """
+    answer: str = state.get("answer", "")
+    validated_evidence: list[Any] = state.get("validated_evidence", [])
+    retrieval_modes: list[str] = state.get("retrieval_modes", [])
+
+    if not answer.strip():
+        return {"grounding_report": None}
+
+    instructions: AgentInstructions = get_config_service().get()
+    answer_svc = _get_answer_service()
+
+    try:
+        report = await answer_svc.review_grounding(
+            answer,
+            validated_evidence,
+            retrieval_modes,
+            instructions,
+        )
+        logger.info(
+            "node_validate_output_ok",
+            score=report.grounding_score,
+            verdict=report.verdict,
+            method=report.method,
+        )
+        return {"grounding_report": report}
+    except Exception as exc:
+        logger.error("node_validate_output_failed", error=str(exc))
+        return {"grounding_report": None}
+
+
+# ════════════════════════════════════════════════════════════════════════════════
+# Node 9 — node_save_to_db
 # ════════════════════════════════════════════════════════════════════════════════
 
 async def node_save_to_db(state: PRAState, config: RunnableConfig) -> dict:

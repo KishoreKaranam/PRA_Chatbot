@@ -11,6 +11,7 @@ Streaming endpoint (/chat/stream):
     clarification_end         clarification {message}  → generator returns early
     validate_evidence         retrieval {modes_used, evidence, warning}
     generate_answer (tokens)  token {text}  (separate streaming call)
+    validate_output           grounding {grounding_score, grounded_percentage, claims, ...}
     save_to_db                done  {confidence, session_id}
 
 Non-streaming endpoint (/chat):
@@ -129,6 +130,7 @@ async def chat(
         confidence=final_state.get("confidence"),
         warning="No relevant information was found in the knowledge graph." if not modes_used else None,
         session_id=request.session_id,
+        grounding=final_state.get("grounding_report"),
     )
 
 
@@ -150,6 +152,7 @@ async def chat_stream(
       clarification  {message}           ← graph ended early (vague / no evidence)
       retrieval      {retrieval_modes_used, evidence, warning}
       token          {text}              ← one per streamed token
+      grounding      {grounded_percentage, verdict, claims, ...}  ← output review
       done           {confidence, session_id}
       error          {detail}
     """
@@ -272,14 +275,29 @@ async def chat_stream(
 
         confidence = answer_svc._estimate_confidence(validated_ev, modes_used)
 
+        # ── Output validation / grounding review layer ────────────────────────
+        # Reviews the completed answer against the retrieved evidence and reports
+        # what % of it is grounded in the documents. Non-fatal on failure.
+        grounding_report = None
+        try:
+            grounding_report = await answer_svc.review_grounding(
+                full_answer, validated_ev, modes_used, instructions,
+            )
+        except Exception as exc:
+            logger.warning("stream_grounding_review_failed", error=str(exc))
+
         # ── Persist the turn (mirrors node_save_to_db, run manually since we
         # bypassed the graph's generate_answer → save_to_db tail) ─────────────
         accumulated["answer"] = full_answer
         accumulated["confidence"] = confidence or 0.0
+        accumulated["grounding_report"] = grounding_report
         try:
             await node_save_to_db(accumulated, {"configurable": {"db": db}})
         except Exception as exc:
             logger.warning("stream_save_to_db_failed", error=str(exc))
+
+        if grounding_report is not None:
+            yield _sse("grounding", grounding_report.model_dump())
 
         yield _sse("done", {
             "confidence": confidence,
