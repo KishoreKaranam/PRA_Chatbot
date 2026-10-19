@@ -130,6 +130,15 @@ class Neo4jGraphEvidence(BaseModel):
 
 # ── Grounding / output review ─────────────────────────────────────────────────
 
+class DocumentRef(BaseModel):
+    """A source document behind a piece of evidence (the graph's `source` field)."""
+    name: str = Field(..., description="Original document name as stored in the graph")
+    url: str | None = Field(
+        default=None,
+        description="Link to open the PDF copy, or None if no PDF is available",
+    )
+
+
 class GroundingClaim(BaseModel):
     """A single atomic claim extracted from the generated answer and its verdict."""
     claim: str = Field(..., description="The atomic statement taken from the answer")
@@ -139,6 +148,10 @@ class GroundingClaim(BaseModel):
         description="Labels/URIs of the evidence items supporting this claim",
     )
     note: str = Field(default="", description="Short rationale for the verdict")
+    sources: list[DocumentRef] = Field(
+        default_factory=list,
+        description="Documents the supporting evidence came from",
+    )
 
 
 class GroundingReport(BaseModel):
@@ -167,6 +180,10 @@ class GroundingReport(BaseModel):
     method: str = Field(
         default="none",
         description="How the score was derived: llm | lexical | none",
+    )
+    documents: list[DocumentRef] = Field(
+        default_factory=list,
+        description="All source documents referenced by the supported claims",
     )
 
 

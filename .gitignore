@@ -54,3 +54,7 @@ htmlcov/
 *.bak
 *.orig
 .sixth/
+
+# ── Internal source documents (PDF copies served by /api/documents) ─────────
+backend/documents/
+*.zip

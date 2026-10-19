@@ -1,10 +1,10 @@
 ﻿import { memo, useState } from "react";
-import { Copy, Check, HelpCircle, RotateCcw, ShieldCheck, ChevronDown } from "lucide-react";
+import { Copy, Check, HelpCircle, RotateCcw, ShieldCheck, ChevronDown, FileText } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import type { Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import type { ChatResponse } from "../api";
-import type { GroundingReport } from "../api";
+import type { DocumentRef, GroundingReport } from "../api";
 import { MermaidDiagram } from "./MermaidDiagram";
 
 interface UserBubbleProps { text: string; }
@@ -31,6 +31,38 @@ function IntentBadge({ intent }: { intent: string }) {
 }
 
 // ── Grounding / output review badge ─────────────────────────────────────────
+
+// Links to the source documents (PDF copies) behind a claim. A document with
+// no PDF copy is shown as plain text so the user still sees where it came from.
+function SourceLinks({ sources }: { sources?: DocumentRef[] }) {
+  if (!sources || sources.length === 0) return null;
+  return (
+    <span className="grounding__sources">
+      {sources.map((doc) =>
+        doc.url ? (
+          <a
+            key={doc.name}
+            className="grounding__source"
+            href={doc.url}
+            target="_blank"
+            rel="noopener noreferrer"
+            title={`Open ${doc.name} (PDF)`}
+          >
+            <FileText size={11} /> {doc.name}
+          </a>
+        ) : (
+          <span
+            key={doc.name}
+            className="grounding__source grounding__source--nolink"
+            title="No PDF copy available"
+          >
+            <FileText size={11} /> {doc.name}
+          </span>
+        ),
+      )}
+    </span>
+  );
+}
 
 const GROUNDING_CONFIG: Record<string, { label: string; color: string }> = {
   high:       { label: "Well grounded",   color: "#16a34a" },
@@ -76,7 +108,10 @@ function GroundingBadge({ report }: { report: GroundingReport }) {
               {report.claims.map((c, i) => (
                 <li key={i} className={c.supported ? "is-supported" : "is-unsupported"}>
                   <span className="grounding__mark">{c.supported ? "✓" : "✕"}</span>
-                  <span>{c.claim}</span>
+                  <span className="grounding__claim">
+                    <span>{c.claim}</span>
+                    <SourceLinks sources={c.sources} />
+                  </span>
                 </li>
               ))}
             </ul>

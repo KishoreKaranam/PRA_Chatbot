@@ -66,6 +66,10 @@ class Settings(BaseSettings):
     backend_port: int = 8000
     log_level: str = "INFO"
 
+    # Source documents (PDF copies of the files named in the graph's `source`
+    # field). Empty = backend/documents. Only files in this folder are served.
+    documents_dir: str = ""
+
     # Agent defaults
     default_retrieval_strategy: str = "hybrid"
     default_answer_style: str = "business"

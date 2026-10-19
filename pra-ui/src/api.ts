@@ -63,11 +63,17 @@ export interface Neo4jGraphEvidence {
 
 export type Evidence = SparqlEvidence | FtsEvidence | SimilarityEvidence | Neo4jGraphEvidence;
 
+export interface DocumentRef {
+  name: string;          // original file name stored in the graph's `source`
+  url: string | null;    // link to the PDF copy, or null if none is available
+}
+
 export interface GroundingClaim {
   claim: string;
   supported: boolean;
   evidence_refs: string[];
   note: string;
+  sources?: DocumentRef[];
 }
 
 export interface GroundingReport {
@@ -79,6 +85,7 @@ export interface GroundingReport {
   summary: string;
   claims: GroundingClaim[];
   method: string;                 // llm | lexical | none
+  documents?: DocumentRef[];      // all documents behind the supported claims
 }
 
 export interface ChatResponse {

@@ -52,6 +52,7 @@ from app.models.schemas import (
 from app.infrastructure.llm.answer_service import AnswerGenerationService
 from app.infrastructure.configuration.config_service import get_config_service
 from app.application.retrieval.orchestrator import RetrievalOrchestrator
+from app.application.grounding.sources import attach_sources
 from app.prompts.conversation import (
     build_insufficient_evidence_message,
     build_node_clarification_message,
@@ -729,6 +730,7 @@ async def node_validate_output(state: PRAState) -> dict:
             retrieval_modes,
             instructions,
         )
+        report = await attach_sources(report, validated_evidence)
         logger.info(
             "node_validate_output_ok",
             score=report.grounding_score,

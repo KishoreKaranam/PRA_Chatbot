@@ -151,6 +151,12 @@ body {
 .grounding__claims li.is-supported .grounding__mark { color: #16a34a; }
 .grounding__claims li.is-unsupported .grounding__mark { color: #dc2626; }
 .grounding__claims li.is-unsupported { color: var(--text-muted); }
+.grounding__claim { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.grounding__sources { display: flex; flex-wrap: wrap; gap: 4px; }
+.grounding__source { display: inline-flex; align-items: center; gap: 4px; max-width: 100%; padding: 1px 7px; border: 1px solid var(--border); border-radius: 999px; background: var(--surface, #fff); color: var(--primary); font-size: 11px; text-decoration: none; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.grounding__source:hover { border-color: var(--primary); text-decoration: underline; }
+.grounding__source--nolink { color: var(--text-muted); cursor: default; }
+.grounding__source--nolink:hover { border-color: var(--border); text-decoration: none; }
 
 /* ── Loading ──────────────────────────────────────────────────────────────── */
 .loading-indicator { display: flex; align-items: center; gap: 10px; padding: 14px 0; animation: fadeUp 0.2s ease; }

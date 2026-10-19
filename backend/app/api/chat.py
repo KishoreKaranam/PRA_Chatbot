@@ -33,6 +33,7 @@ from app.orchestration.langgraph.nodes import _get_answer_service, _get_orchestr
 from app.orchestration.langgraph.state import PRAState, make_initial_state
 from app.models.schemas import AgentInstructions, ChatRequest, ChatResponse, ConversationTurn, Neo4jGraphEvidence
 from app.infrastructure.configuration.config_service import get_config_service
+from app.application.grounding.sources import attach_sources
 from app.core.log_config import get_logger
 
 router = APIRouter()
@@ -283,6 +284,7 @@ async def chat_stream(
             grounding_report = await answer_svc.review_grounding(
                 full_answer, validated_ev, modes_used, instructions,
             )
+            grounding_report = await attach_sources(grounding_report, validated_ev)
         except Exception as exc:
             logger.warning("stream_grounding_review_failed", error=str(exc))
 
