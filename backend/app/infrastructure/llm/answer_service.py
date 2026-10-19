@@ -13,7 +13,7 @@ import re
 from math import isfinite
 from openai import AsyncOpenAI, AsyncAzureOpenAI
 import anthropic
-import httpx  # anthropic SDK expects an httpx.AsyncClient for custom http_client
+import httpx2 as httpx
 
 from app.models.schemas import (
     AgentInstructions,
@@ -302,19 +302,25 @@ class AnswerGenerationService:
         if self._provider in ("anthropic", "azure_anthropic"):
             response = await self._anthropic_client.messages.create(
                 model=self._model,
-                max_tokens=min(self._max_tokens, 2000),
+                max_tokens=min(self._max_tokens, 8000),
                 system=GROUNDING_SYSTEM_PROMPT,
                 messages=[{"role": "user", "content": user_message}],
             )
-            return self._extract_text_from_content(response.content)
-
+            text = self._extract_text_from_content(response.content)
+            logger.info(
+                "grounding_reviewer_raw",
+                stop_reason=response.stop_reason,
+                output_tokens=response.usage.output_tokens,
+                ending=text[-150:],
+            )
+            return text
         response = await self._client.chat.completions.create(
             model=self._model,
             messages=[
                 {"role": "system", "content": GROUNDING_SYSTEM_PROMPT},
                 {"role": "user", "content": user_message},
             ],
-            max_completion_tokens=min(self._max_tokens, 2000),
+            max_completion_tokens=min(self._max_tokens, 8000),
         )
         return response.choices[0].message.content or ""
 
