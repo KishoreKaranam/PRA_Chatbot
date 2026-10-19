@@ -18,7 +18,7 @@ import re
 from typing import Literal
 
 import anthropic
-import httpx  # anthropic SDK expects an httpx.AsyncClient for custom http_client
+import httpx2 as httpx
 
 from app.models.schemas import (
     AgentInstructions,

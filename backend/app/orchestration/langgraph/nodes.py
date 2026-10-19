@@ -34,7 +34,7 @@ import re
 from typing import Any
 
 import anthropic
-import httpx  # anthropic SDK expects an httpx.AsyncClient for custom http_client
+import httpx2 as httpx
 from langchain_core.runnables import RunnableConfig
 from app.core.log_config import get_logger
 from app.core.settings import get_settings

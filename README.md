@@ -280,8 +280,8 @@ is for Azure OpenAI and is separate from `azure_anthropic`.
 
 | Variable | Example | Description |
 |----------|---------|-------------|
-| `AZURE_OPENAI_API_KEY` | `7o7Nob...` | Azure API key |
-| `AZURE_OPENAI_ENDPOINT` | `https://weave.cognitiveservices.azure.com/` | Endpoint |
+| `AZURE_OPENAI_API_KEY` | <your-azure-key> | Azure API key |
+| `AZURE_OPENAI_ENDPOINT` | `https://<your-resource>.cognitiveservices.azure.com/` | Endpoint |
 | `AZURE_OPENAI_API_VERSION` | `2025-01-01-preview` | API version |
 | `AZURE_OPENAI_EMBEDDING_DEPLOYMENT` | `text-embedding-3-large` | Deployment name |
 | `EMBEDDING_ENABLED` | `true` | Enable vector search |
