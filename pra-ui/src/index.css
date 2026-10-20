@@ -327,6 +327,12 @@ body {
   cursor: grab;
 }
 .mermaid-viewport.mermaid-grabbing { cursor: grabbing; }
+.mermaid-block--fullscreen {
+  position: fixed; inset: 16px; z-index: 1000; margin: 0;
+  display: flex; flex-direction: column;
+  background: var(--surface, #fff); box-shadow: 0 0 0 100vmax rgba(15, 23, 42, 0.45);
+}
+.mermaid-block--fullscreen .mermaid-viewport { flex: 1; max-height: none; }
 .mermaid-toolbar {
   display: flex; justify-content: flex-end; gap: 6px; margin-bottom: 8px;
 }
