@@ -360,6 +360,8 @@ class AnswerGenerationService:
 
         raw_claims = data.get("claims")
         if not isinstance(raw_claims, list):
+            raw_claims = cls._line_verdicts_to_claims(data.get("lines"), answer_lines)
+        if not isinstance(raw_claims, list):
             return None
 
         claims: list[GroundingClaim] = []
@@ -396,6 +398,40 @@ class AnswerGenerationService:
             claims=claims,
             method="llm",
         )
+
+    @staticmethod
+    def _plain_line(line: str) -> str:
+        """Answer line without markdown symbols (for display as a claim)."""
+        text = re.sub(r"^\s*(?:[-*+]|\d+[.)])\s+", "", line)        # bullet / number
+        text = text.replace("**", "").replace("__", "").replace("`", "")
+        text = re.sub(r"\s*\|\s*", " — ", text.strip().strip("|")).strip(" —")
+        return text.strip()
+
+    @classmethod
+    def _line_verdicts_to_claims(cls, lines, answer_lines: list[str]) -> list[dict] | None:
+        """Turn per-line verdicts ({"line", "ok", "refs", "missing"}) into claim dicts."""
+        if not isinstance(lines, list):
+            return None
+        claims: list[dict] = []
+        for item in lines:
+            if not isinstance(item, dict):
+                continue
+            try:
+                line_no = int(item.get("line"))
+            except (TypeError, ValueError):
+                continue
+            if not (1 <= line_no <= len(answer_lines)) or not answer_lines[line_no - 1].strip():
+                continue
+            ok = bool(item.get("ok", False))
+            text = cls._plain_line(answer_lines[line_no - 1])
+            missing = str(item.get("missing", "") or "").strip()
+            claims.append({
+                "claim": missing if (not ok and missing) else text,
+                "supported": ok,
+                "line": line_no,
+                "evidence_refs": item.get("refs") or [],
+            })
+        return claims
 
     @staticmethod
     def _quote_for(item: dict, answer_lines: list[str]) -> str:

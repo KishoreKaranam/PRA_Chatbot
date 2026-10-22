@@ -20,6 +20,7 @@ Non-streaming endpoint (/chat):
 """
 from __future__ import annotations
 
+import asyncio
 import json
 from typing import Any, AsyncGenerator
 
@@ -33,7 +34,7 @@ from app.orchestration.langgraph.nodes import _get_answer_service, _get_orchestr
 from app.orchestration.langgraph.state import PRAState, make_initial_state
 from app.models.schemas import AgentInstructions, ChatRequest, ChatResponse, ConversationTurn, Neo4jGraphEvidence
 from app.infrastructure.configuration.config_service import get_config_service
-from app.application.grounding.sources import attach_sources
+from app.application.grounding.sources import attach_sources, prefetch_sources
 from app.core.log_config import get_logger
 
 router = APIRouter()
@@ -262,6 +263,10 @@ async def chat_stream(
         is_followup   = accumulated.get("is_followup", False)
         full_answer   = ""
 
+        # The source-document lookup only needs the evidence, so start it now
+        # and let it run while the answer streams (saves a few seconds later).
+        sources_task = asyncio.create_task(prefetch_sources(validated_ev))
+
         try:
             async for token in answer_svc.generate_stream(
                 rewritten_q, validated_ev, modes_used, instructions,
@@ -271,6 +276,7 @@ async def chat_stream(
                 yield _sse("token", {"text": token})
         except Exception as exc:
             logger.error("answer_stream_failed", error=str(exc))
+            sources_task.cancel()
             yield _sse("error", {"detail": str(exc)})
             return
 
@@ -288,7 +294,9 @@ async def chat_stream(
             grounding_report = await answer_svc.review_grounding(
                 full_answer, validated_ev, modes_used, instructions,
             )
-            grounding_report = await attach_sources(grounding_report, validated_ev)
+            grounding_report = await attach_sources(
+                grounding_report, validated_ev, sources_by_name=await sources_task,
+            )
         except Exception as exc:
             logger.warning("stream_grounding_review_failed", error=str(exc))
 

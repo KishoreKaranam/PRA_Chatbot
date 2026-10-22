@@ -192,17 +192,32 @@ async def lookup_sources(names: list[str], client=None) -> dict[str, list[str]]:
 
 # ── Public entry point ────────────────────────────────────────────────────────
 
+async def prefetch_sources(evidence: list, client=None) -> dict[str, list[str]] | None:
+    """Look up the evidence's source documents ahead of time. Never raises.
+
+    The lookup only depends on the retrieved evidence, not on the evidence
+    check, so it can run while the answer is being written.
+    """
+    try:
+        return await lookup_sources(evidence_names(evidence), client)
+    except Exception as exc:
+        logger.warning("grounding_sources_prefetch_failed", error=str(exc))
+        return None
+
+
 async def attach_sources(
     report: GroundingReport | None,
     evidence: list,
     client=None,
+    sources_by_name: dict[str, list[str]] | None = None,
 ) -> GroundingReport | None:
     """Attach source documents to every supported claim. Never raises."""
     if report is None or not report.claims:
         return report
     try:
         names = evidence_names(evidence)
-        sources_by_name = await lookup_sources(names, client)
+        if sources_by_name is None:
+            sources_by_name = await lookup_sources(names, client)
         if not sources_by_name:
             return report
 

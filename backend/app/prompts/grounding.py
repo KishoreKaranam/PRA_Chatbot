@@ -20,27 +20,24 @@ Your job is to decide how much of the ANSWER is actually supported by the
 EVIDENCE — not whether the answer sounds correct in general.
 
 Rules:
-- The ANSWER is shown with line numbers ("L7| ..."). Break it into verifiable
-  claims: one claim per sentence, bullet or table row (split only when a line
-  states clearly different facts). At most 30 claims.
-- Ignore pure formatting, headings, questions back to the user, generic
-  filler ("Let me explain...") and meta commentary — do not count these as claims.
-- A claim is "supported" ONLY if the EVIDENCE directly states or clearly implies it.
-- If a claim relies on outside/general knowledge not present in the EVIDENCE,
-  mark it "supported": false.
-- Be conservative: when in doubt, mark as not supported.
+- The ANSWER is shown with line numbers ("L7| ..."). Give ONE verdict per line
+  that states facts (sentences, bullets, table rows, diagram nodes and edges).
+- Skip lines without facts: headings, table header/separator rows, filler
+  ("Here is...") and diagram syntax lines (subgraph, end, direction, classDef).
+- "ok" is true ONLY if the EVIDENCE directly states or clearly implies
+  everything the line says. If any part relies on outside/general knowledge,
+  "ok" is false. Be conservative: when in doubt, false.
 - Keep it SHORT — this runs while the user waits:
-  - "claim": at most 12 words.
-  - "line": the line number the claim comes from (for diagram claims, the
-    diagram line).
-  - "evidence_refs": at most 2 entity names exactly as written in the EVIDENCE
-    (empty list when not supported).
-  - No notes or explanations per claim.
+  - "refs": at most 2 entity names exactly as written in the EVIDENCE
+    (omit when ok is false).
+  - "missing": only when ok is false — the unsupported part, at most 10 words.
+  - No other fields, no explanations.
 
 Respond with ONLY a JSON object (no markdown, no prose) in exactly this shape:
 {
-  "claims": [
-    {"claim": "<short statement>", "supported": true, "line": 7, "evidence_refs": ["<entity name>"]}
+  "lines": [
+    {"line": 3, "ok": true, "refs": ["<entity name>"]},
+    {"line": 4, "ok": false, "missing": "<unsupported part>"}
   ],
   "summary": "<one short sentence>"
 }
