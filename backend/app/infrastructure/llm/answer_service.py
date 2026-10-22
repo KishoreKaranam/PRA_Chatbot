@@ -255,7 +255,7 @@ class AnswerGenerationService:
         parsing fails, so the layer never breaks the response.
         """
         answer = (answer or "").strip()
-        context = self._build_context(evidence, instructions)
+        context = self._build_context(evidence, instructions, purpose="review")
 
         # No answer, or nothing was retrieved → nothing to ground against.
         if not answer:
@@ -314,6 +314,7 @@ class AnswerGenerationService:
                 ending=text[-150:],
             )
             return text
+
         response = await self._client.chat.completions.create(
             model=self._model,
             messages=[
@@ -463,9 +464,19 @@ class AnswerGenerationService:
         return cleaned.strip()
     # ── Context builder ───────────────────────────────────────────────────────
 
-    def _build_context(self, evidence: list, instructions: AgentInstructions) -> str:
-        """Serialise evidence objects into a text context block."""
+    def _build_context(
+        self,
+        evidence: list,
+        instructions: AgentInstructions,
+        purpose: str = "answer",
+    ) -> str:
+        """Serialise evidence objects into a text context block.
+
+        purpose: "answer" (text Claude answers from) or "review" (text the
+        grounding reviewer checks against) — only used for logging.
+        """
         primary_evidence, supporting_evidence = self._prioritize_evidence(evidence)
+        supporting_before_drop = list(supporting_evidence)
 
         # A sufficiently populated Neo4j relationship result answers the
         # relationship question directly. Do not dilute it with unrelated
@@ -484,21 +495,91 @@ class AnswerGenerationService:
         )
 
         parts: list[str] = []
+        stats: dict[str, int] = {}
 
         if primary_evidence:
             parts.append("### PRIMARY GRAPH EVIDENCE (Highest Priority)")
             parts.append("This evidence comes directly from the structured PRA knowledge graph. Prefer these facts for questions about relationships and definitions.")
-            self._format_evidence(primary_evidence, parts)
+            self._format_evidence(primary_evidence, parts, stats)
 
         if supporting_evidence:
             parts.append("\n### SUPPORTING EVIDENCE (Lower Priority)")
             parts.append("This evidence is from keyword or semantic searches. Use it for supplementary details or when primary evidence is absent.")
-            self._format_evidence(supporting_evidence, parts)
+            self._format_evidence(supporting_evidence, parts, stats)
 
-        return "\n".join(parts)
+        context = "\n".join(parts)
+        self._log_context(evidence, supporting_before_drop, supporting_evidence, stats, context, purpose)
+        return context
 
-    def _format_evidence(self, evidence_list: list, parts: list[str]) -> None:
-        """Helper to format a list of evidence into text parts."""
+    # ── Measurement: what actually reaches Claude ─────────────────────────────
+
+    def _log_context(
+        self,
+        evidence: list,
+        supporting_before_drop: list,
+        supporting_kept: list,
+        stats: dict[str, int],
+        context: str,
+        purpose: str,
+    ) -> None:
+        """Log what the search FOUND vs what was actually SENT to Claude.
+
+        Measurement only — does not change the answer. Compare *_found with
+        *_sent to see evidence that was retrieved but never reached Claude.
+        Set LOG_LLM_CONTEXT=true in backend/.env to also save the full text
+        sent to Claude under backend/logs/llm_context/.
+        """
+        graph = [ev for ev in evidence if isinstance(ev, Neo4jGraphEvidence)]
+        fts = [ev for ev in evidence if isinstance(ev, FtsEvidence)]
+        sim = [ev for ev in evidence if isinstance(ev, SimilarityEvidence)]
+        logger.info(
+            "llm_context_built",
+            purpose=purpose,
+            graph_entities_found=sum(len(ev.results) for ev in graph),
+            graph_relationships_found=sum(len(ev.relationships) for ev in graph),
+            graph_entities_sent=stats.get("graph_entities_sent", 0),
+            graph_relationships_sent=stats.get("graph_relationships_sent", 0),
+            fts_hits_found=sum(len(ev.hits) for ev in fts),
+            fts_hits_sent=stats.get("fts_hits_sent", 0),
+            similarity_hits_found=sum(len(ev.hits) for ev in sim),
+            similarity_hits_sent=stats.get("similarity_hits_sent", 0),
+            supporting_dropped=len(supporting_before_drop) > len(supporting_kept),
+            context_chars=len(context),
+            context_tokens_est=len(context) // 4,
+        )
+        if get_settings().log_llm_context:
+            self._dump_context(context, purpose)
+
+    @staticmethod
+    def _dump_context(context: str, purpose: str) -> None:
+        """Save the exact text sent to Claude (debugging / before-after comparisons)."""
+        try:
+            from datetime import datetime
+            from pathlib import Path
+
+            folder = Path(__file__).resolve().parents[3] / "logs" / "llm_context"
+            folder.mkdir(parents=True, exist_ok=True)
+            path = folder / f"{datetime.now():%Y%m%d_%H%M%S_%f}_{purpose}.txt"
+            path.write_text(context, encoding="utf-8")
+            logger.info("llm_context_saved", path=str(path))
+        except Exception as exc:  # never break an answer because of logging
+            logger.warning("llm_context_save_failed", error=str(exc))
+
+    def _format_evidence(
+        self,
+        evidence_list: list,
+        parts: list[str],
+        stats: dict[str, int] | None = None,
+    ) -> None:
+        """Helper to format a list of evidence into text parts.
+
+        stats (optional) counts what is written, for the llm_context_built log.
+        """
+        stats = stats if stats is not None else {}
+
+        def count(key: str, n: int = 1) -> None:
+            stats[key] = stats.get(key, 0) + n
+
         for ev in evidence_list:
             if isinstance(ev, SparqlEvidence) and ev.triple_count > 0:
                 parts.append("=== SPARQL CONSTRUCT Results (ontology sub-graph) ===")
@@ -507,6 +588,7 @@ class AnswerGenerationService:
 
             elif isinstance(ev, FtsEvidence) and ev.hits:
                 parts.append(f"=== Full-Text Search Results (term: {ev.search_term}) ===")
+                count("fts_hits_sent", len(ev.hits))
                 for hit in ev.hits:
                     parts.append(f"  URI: {hit.uri}")
                     parts.append(f"  Label: {hit.label}")
@@ -516,6 +598,7 @@ class AnswerGenerationService:
 
             elif isinstance(ev, SimilarityEvidence) and ev.hits:
                 parts.append("=== Similarity Search Results ===")
+                count("similarity_hits_sent", len(ev.hits))
                 for hit in ev.hits:
                     parts.append(f"  URI: {hit.uri}")
                     parts.append(f"  Label: {hit.label}")
@@ -526,6 +609,7 @@ class AnswerGenerationService:
             elif isinstance(ev, Neo4jGraphEvidence) and ev.relationships:
                 parts.append("=== Neo4j Graph Results (nodes and relationships) ===")
                 # Cap to avoid token overflow
+                count("graph_relationships_sent", len(ev.relationships[:30]))
                 for rel in ev.relationships[:30]:
                     # Find the start and end nodes from the results list
                     start_node = next((n for n in ev.results if n.element_id == rel.start_node), None)

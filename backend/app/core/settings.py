@@ -65,6 +65,9 @@ class Settings(BaseSettings):
     backend_host: str = "0.0.0.0"
     backend_port: int = 8000
     log_level: str = "INFO"
+    # Save the exact text sent to Claude for each answer/review under
+    # backend/logs/llm_context/ (for debugging and before/after comparisons).
+    log_llm_context: bool = False
 
     # Source documents (PDF copies of the files named in the graph's `source`
     # field). Empty = backend/documents. Only files in this folder are served.
