@@ -53,10 +53,11 @@ def test_logs_found_vs_sent_for_graph_nodes_without_relationships():
     e = _event(logs, "answer")
     assert e["graph_entities_found"] == 16
     assert e["graph_relationships_found"] == 0
-    # Current behaviour (before the fix): these 16 graph entities are not written
-    # into the text sent to Claude. The fix will make graph_entities_sent == 16.
-    assert e["graph_entities_sent"] == 0
-    assert "Function 3" not in context
+    # Fix 1: graph entities without relationships now reach Claude.
+    # (Before the fix this was graph_entities_sent == 0.)
+    assert e["graph_entities_sent"] == 16
+    assert "Function 3" in context
+    assert "Payment Processing" in context
     assert e["fts_hits_found"] == e["fts_hits_sent"] == 1
     assert e["similarity_hits_found"] == e["similarity_hits_sent"] == 2
     assert e["context_tokens_est"] == len(context) // 4
@@ -94,3 +95,39 @@ def test_dump_writes_file(tmp_path, monkeypatch):
     files = list((fake_backend / "logs" / "llm_context").glob("*_answer.txt"))
     assert len(files) == 1
     assert files[0].read_text(encoding="utf-8") == "the exact context"
+
+
+def test_entities_are_grouped_with_names_and_descriptions():
+    ev = Neo4jGraphEvidence(query="q", result_count=2, results=[
+        Neo4jNode(element_id="d", labels=["Domain"], properties={"name": "Payment Processing",
+                                                                 "description": "Decides how orders are processed"}),
+        Neo4jNode(element_id="f", labels=["Function"], properties={"name": "Workflow Orchestration",
+                                                                   "description": "Controls execution"}),
+    ])
+    context = _service()._build_context([ev], AgentInstructions())
+    assert "PRIMARY GRAPH EVIDENCE" in context
+    assert "Domain:\n  - Payment Processing: Decides how orders are processed" in context
+    assert "Function:\n  - Workflow Orchestration: Controls execution" in context
+
+
+def test_relationship_results_show_names_not_internal_ids():
+    from app.models.schemas import Neo4jRelationship
+    ev = Neo4jGraphEvidence(query="q", result_count=2, results=[
+        Neo4jNode(element_id="4:abc:1", labels=["Function"], properties={"name": "Order Registration"}),
+        Neo4jNode(element_id="4:abc:2", labels=["Rule"], properties={"name": "Mandatory fields"}),
+    ], relationships=[Neo4jRelationship(element_id="r1", type="HAS_RULE", start_node="4:abc:1",
+                                         end_node="4:abc:2", properties={})])
+    structlog.reset_defaults()
+    with capture_logs() as logs:
+        context = _service()._build_context([ev], AgentInstructions())
+    assert "label: Order Registration" in context and "label: Mandatory fields" in context
+    assert "label: 4:abc:1" not in context
+    e = _event(logs, "answer")
+    assert e["graph_relationships_sent"] == 1 and e["graph_entities_sent"] == 2
+
+
+def test_entity_cap():
+    nodes = [Neo4jNode(element_id=str(i), labels=["Rule"], properties={"name": f"R{i}"}) for i in range(50)]
+    context = _service()._build_context([Neo4jGraphEvidence(query="q", results=nodes, result_count=50)],
+                                        AgentInstructions())
+    assert "R39" in context and "R40" not in context and "(+10 more not shown)" in context

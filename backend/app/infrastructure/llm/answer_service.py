@@ -42,6 +42,9 @@ logger = get_logger(__name__)
 class AnswerGenerationService:
     """Generate LLM answers grounded in retrieved evidence."""
 
+    # Upper limit of graph entities written into Claude's evidence text.
+    MAX_GRAPH_ENTITIES = 40
+
     def __init__(self) -> None:
         settings = get_settings()
         self._provider = settings.llm_provider.lower()
@@ -369,6 +372,7 @@ class AnswerGenerationService:
                     supported=bool(item.get("supported", False)),
                     evidence_refs=[str(r) for r in refs],
                     note=str(item.get("note", "")).strip(),
+                    answer_quote=str(item.get("answer_quote", "") or "").strip(),
                 )
             )
 
@@ -410,6 +414,7 @@ class AnswerGenerationService:
                     supported=supported,
                     evidence_refs=[],
                     note=f"lexical overlap {overlap:.0%}",
+                    answer_quote=sentence,
                 )
             )
 
@@ -610,6 +615,9 @@ class AnswerGenerationService:
                 parts.append("=== Neo4j Graph Results (nodes and relationships) ===")
                 # Cap to avoid token overflow
                 count("graph_relationships_sent", len(ev.relationships[:30]))
+                count("graph_entities_sent", len(
+                    {r.start_node for r in ev.relationships[:30]} | {r.end_node for r in ev.relationships[:30]}
+                ))
                 for rel in ev.relationships[:30]:
                     # Find the start and end nodes from the results list
                     start_node = next((n for n in ev.results if n.element_id == rel.start_node), None)
@@ -624,6 +632,27 @@ class AnswerGenerationService:
                     self._format_neo4j_node(end_node, rel.end_node, parts)
                     parts.append("")
 
+            elif isinstance(ev, Neo4jGraphEvidence) and ev.results:
+                # Graph queries such as "functions of a domain" return the
+                # entities without relationship objects. Previously these were
+                # silently dropped, so Claude never saw them.
+                shown = ev.results[:self.MAX_GRAPH_ENTITIES]
+                parts.append("=== Neo4j Graph Results (entities) ===")
+                count("graph_entities_sent", len(shown))
+                groups: dict[str, list] = {}
+                for node in shown:
+                    kind = next((lbl for lbl in node.labels if lbl != "Resource"), "Entity")
+                    groups.setdefault(kind, []).append(node)
+                for kind, nodes in groups.items():
+                    parts.append(f"{kind}:")
+                    for node in nodes:
+                        name = self._node_name(node)
+                        description = self._human_value(node.properties.get("description"))
+                        parts.append(f"  - {name}" + (f": {description[:300]}" if description else ""))
+                    parts.append("")
+                if len(ev.results) > len(shown):
+                    parts.append(f"  (+{len(ev.results) - len(shown)} more not shown)")
+
     @staticmethod
     def _format_neo4j_node(node, fallback_id: str, parts: list[str]) -> None:
         """Expose human-readable Neo4j properties before technical identifiers."""
@@ -632,13 +661,21 @@ class AnswerGenerationService:
             return
 
         properties = node.properties
-        label = AnswerGenerationService._human_value(properties.get("label"))
+        label = AnswerGenerationService._node_name(node)
         description = AnswerGenerationService._human_value(properties.get("description"))
 
         parts.append(f"  label: {label or fallback_id}")
         if description:
             parts.append(f"  description: {description}")
         parts.append(f"  element_id: {node.element_id}")
+
+    @staticmethod
+    def _node_name(node) -> str:
+        """Readable name of a graph node: `name` (PRA schema), then `label`, then its id."""
+        props = node.properties or {}
+        return (AnswerGenerationService._human_value(props.get("name"))
+                or AnswerGenerationService._human_value(props.get("label"))
+                or str(node.element_id))
 
     def _prioritize_evidence(self, evidence: list) -> tuple[list, list]:
         """Sort evidence into primary (graph) and supporting (search) buckets."""

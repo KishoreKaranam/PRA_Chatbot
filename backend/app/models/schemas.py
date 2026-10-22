@@ -148,6 +148,11 @@ class GroundingClaim(BaseModel):
         description="Labels/URIs of the evidence items supporting this claim",
     )
     note: str = Field(default="", description="Short rationale for the verdict")
+    answer_quote: str = Field(
+        default="",
+        description="Exact sentence/bullet of the answer this claim was taken from "
+                    "(used to place source links next to that part of the answer)",
+    )
     sources: list[DocumentRef] = Field(
         default_factory=list,
         description="Documents the supporting evidence came from",

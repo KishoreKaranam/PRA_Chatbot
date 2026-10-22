@@ -158,6 +158,14 @@ body {
 .grounding__source--nolink { color: var(--text-muted); cursor: default; }
 .grounding__source--nolink:hover { border-color: var(--border); text-decoration: none; }
 
+/* ── Inline source chips (next to paragraphs, bullets, table rows) ─────────── */
+.inline-sources { display: inline-flex; flex-wrap: wrap; gap: 4px; margin-left: 6px; vertical-align: middle; }
+.inline-sources--block { display: flex; margin: 6px 0 10px; }
+.inline-source { display: inline-flex; align-items: center; gap: 3px; max-width: 220px; padding: 0 7px; height: 18px; border-radius: 999px; background: var(--surface-sunken, #f1f5f9); border: 1px solid var(--border); color: var(--primary); font-size: 10.5px; font-weight: 500; line-height: 1; text-decoration: none; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; transition: background .15s, color .15s, border-color .15s; }
+a.inline-source:hover { background: var(--primary); border-color: var(--primary); color: #fff; }
+.inline-source--nolink { cursor: default; color: var(--text-muted); }
+.inline-source--warn { background: #fffbeb; border-color: #fcd34d; color: #b45309; cursor: help; }
+
 /* ── Loading ──────────────────────────────────────────────────────────────── */
 .loading-indicator { display: flex; align-items: center; gap: 10px; padding: 14px 0; animation: fadeUp 0.2s ease; }
 .typing-dots { display: flex; gap: 4px; }

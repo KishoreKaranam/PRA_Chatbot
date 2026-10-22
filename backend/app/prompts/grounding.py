@@ -27,12 +27,16 @@ Rules:
 - If a claim relies on outside/general knowledge not present in the EVIDENCE,
   mark it "supported": false.
 - Be conservative: when in doubt, mark as not supported.
+- "answer_quote" must be copied exactly from the ANSWER (no rewording), so the
+  claim can be located in the answer text. Keep it to one sentence, bullet or
+  table row. For claims about a diagram, quote the diagram line it comes from.
 
 Respond with ONLY a JSON object (no markdown, no prose) in exactly this shape:
 {
   "claims": [
     {
       "claim": "<atomic statement from the answer>",
+      "answer_quote": "<the sentence, bullet or table row of the ANSWER this claim comes from, copied word for word>",
       "supported": true,
       "evidence_refs": ["<label or uri of supporting evidence>"],
       "note": "<short reason>"

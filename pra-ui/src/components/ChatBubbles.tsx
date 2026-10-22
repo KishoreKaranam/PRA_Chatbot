@@ -1,11 +1,14 @@
-﻿import { memo, useState } from "react";
-import { Copy, Check, HelpCircle, RotateCcw, ShieldCheck, ChevronDown, FileText } from "lucide-react";
+﻿import { Children, cloneElement, isValidElement, memo, useMemo, useState } from "react";
+import type { ReactElement, ReactNode } from "react";
+import { Copy, Check, HelpCircle, RotateCcw, ShieldCheck, ChevronDown, FileText, AlertTriangle } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import type { Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import type { ChatResponse } from "../api";
 import type { DocumentRef, GroundingReport } from "../api";
 import { MermaidDiagram } from "./MermaidDiagram";
+import { claimsByLine, claimsInRange, groupSources, shortDocName } from "./inlineSources";
+import type { Claim } from "./inlineSources";
 
 interface UserBubbleProps { text: string; }
 interface BotBubbleProps { msg: ChatResponse; streaming?: boolean; }
@@ -122,6 +125,56 @@ function GroundingBadge({ report }: { report: GroundingReport }) {
   );
 }
 
+// ── Inline source chips (next to each paragraph / bullet / table row) ─────────
+
+function claimList(claims: string[]): string {
+  return claims.map((c) => `• ${c}`).join("\n");
+}
+
+function InlineSources({ claims, block }: { claims: Claim[]; block?: boolean }) {
+  if (claims.length === 0) return null;
+  const { docs, verifiedNoDoc, unsupported } = groupSources(claims);
+  if (docs.length === 0 && verifiedNoDoc.length === 0 && unsupported.length === 0) return null;
+  return (
+    <span className={`inline-sources${block ? " inline-sources--block" : ""}`}>
+      {docs.map(({ doc, claims: supported }) =>
+        doc.url ? (
+          <a
+            key={doc.name}
+            className="inline-source"
+            href={doc.url}
+            target="_blank"
+            rel="noopener noreferrer"
+            title={`${doc.name}\n\nSupports:\n${claimList(supported)}`}
+          >
+            <FileText size={10} /> {shortDocName(doc.name)}
+          </a>
+        ) : (
+          <span
+            key={doc.name}
+            className="inline-source inline-source--nolink"
+            title={`${doc.name} (no PDF copy)\n\nSupports:\n${claimList(supported)}`}
+          >
+            <FileText size={10} /> {shortDocName(doc.name)}
+          </span>
+        ),
+      )}
+      {docs.length === 0 && verifiedNoDoc.length > 0 && (
+        <span className="inline-source inline-source--nolink" title={`Found in the PRA knowledge base:\n${claimList(verifiedNoDoc)}`}>
+          <Check size={10} /> PRA knowledge base
+        </span>
+      )}
+      {unsupported.length > 0 && (
+        <span className="inline-source inline-source--warn" title={`Not found in the sources:\n${claimList(unsupported)}`}>
+          <AlertTriangle size={10} /> Not in sources
+        </span>
+      )}
+    </span>
+  );
+}
+
+type HastNode = { type?: string; tagName?: string; position?: { start: { line: number }; end: { line: number } }; children?: HastNode[] };
+
 // ── User bubble ───────────────────────────────────────────────────────────────
 
 export const UserBubble = memo(function UserBubble({ text }: UserBubbleProps) {
@@ -149,6 +202,19 @@ export const BotBubble = memo(function BotBubble({ msg, streaming }: BotBubblePr
     setTimeout(() => setCopied(false), 2000);
   };
 
+  // Source chips are added once the evidence check has finished.
+  const showInline =
+    !streaming && !isClarification && !!msg.grounding && msg.grounding.method !== "none";
+  const byLine = useMemo(
+    () => (showInline && msg.grounding ? claimsByLine(msg.answer, msg.grounding.claims as Claim[]) : new Map<number, Claim[]>()),
+    [showInline, msg.answer, msg.grounding],
+  );
+  const chipsFor = (node: HastNode | undefined, endLine?: number, block?: boolean) => {
+    if (!showInline || !node?.position) return null;
+    const claims = claimsInRange(byLine, node.position.start.line, endLine ?? node.position.end.line);
+    return claims.length ? <InlineSources claims={claims} block={block} /> : null;
+  };
+
   // Render ```mermaid fenced blocks as downloadable pictures; all other
   // code blocks fall through to the default rendering.
   const markdownComponents: Components = {
@@ -159,8 +225,34 @@ export const BotBubble = memo(function BotBubble({ msg, streaming }: BotBubblePr
       const cls =
         child && child.type === "element" ? child.properties?.className : undefined;
       const isMermaid = Array.isArray(cls) && cls.includes("language-mermaid");
-      if (isMermaid) return <>{children}</>;
+      if (isMermaid) return <>{children}{chipsFor(node as HastNode, undefined, true)}</>;
       return <pre>{children}</pre>;
+    },
+    p({ node, children }) {
+      return <p>{children}{chipsFor(node as HastNode)}</p>;
+    },
+    li({ node, children, className }) {
+      const n = node as HastNode;
+      const kids = n?.children ?? [];
+      // In "loose" lists the text sits in a <p>, which shows the chips itself.
+      if (kids.some((k) => k.tagName === "p")) return <li className={className}>{children}</li>;
+      // Only this item's own lines, not its nested sub-list; chips go before the sub-list.
+      const nested = kids.find((k) => k.tagName === "ul" || k.tagName === "ol");
+      const end = nested?.position ? nested.position.start.line - 1 : undefined;
+      const chips = chipsFor(n, end);
+      if (!chips) return <li className={className}>{children}</li>;
+      const items = Children.toArray(children);
+      const at = items.findIndex((c) => isValidElement(c) && (c.type === "ul" || c.type === "ol"));
+      if (at === -1) return <li className={className}>{items}{chips}</li>;
+      return <li className={className}>{items.slice(0, at)}{chips}{items.slice(at)}</li>;
+    },
+    tr({ node, children }) {
+      const chips = chipsFor(node as HastNode);
+      if (!chips) return <tr>{children}</tr>;
+      const cells = Children.toArray(children).filter(isValidElement) as ReactElement<{ children?: ReactNode }>[];
+      if (cells.length === 0) return <tr>{children}</tr>;
+      const last = cells[cells.length - 1];
+      return <tr>{cells.slice(0, -1)}{cloneElement(last, undefined, last.props.children, chips)}</tr>;
     },
     code({ className, children, ...props }) {
       const match = /language-mermaid/.test(className || "");
