@@ -158,6 +158,7 @@ body {
 .grounding__source--nolink { color: var(--text-muted); cursor: default; }
 .grounding__source--nolink:hover { border-color: var(--border); text-decoration: none; }
 
+.grounding__badge--static, .grounding__badge--static:hover { cursor: default; background: var(--surface-sunken); }
 /* ── Inline source chips (next to paragraphs, bullets, table rows) ─────────── */
 .inline-sources { display: inline-flex; flex-wrap: wrap; gap: 4px; margin-left: 6px; vertical-align: middle; }
 .inline-sources--block { display: flex; margin: 6px 0 10px; }
