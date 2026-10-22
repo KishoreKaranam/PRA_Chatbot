@@ -101,6 +101,7 @@ export interface ChatResponse {
   clarification_needed?: string | null;
   session_id?: string | null;   // echoed back from backend
   grounding?: GroundingReport | null;  // output review: % grounded in evidence
+  reviewing?: boolean;                 // answer done, evidence check still running
 }
 
 export interface ConversationTurn {
@@ -180,6 +181,7 @@ export interface StreamCallbacks {
   onClarification: (message: string) => void;
   onRetrieval: (data: { retrieval_modes_used: string[]; evidence: unknown[]; warning?: string | null }) => void;
   onToken: (text: string) => void;
+  onReviewing?: () => void;
   onGrounding: (report: GroundingReport) => void;
   onDone: (data: { confidence: number | null; session_id: string | null }) => void;
   onError: (error: string) => void;
@@ -335,6 +337,7 @@ export async function sendQuestionStream(
           case 'clarification': callbacks.onClarification(data.message); break;
           case 'retrieval':     callbacks.onRetrieval(data); break;
           case 'token':         callbacks.onToken(data.text); break;
+          case 'reviewing':     callbacks.onReviewing?.(); break;
           case 'grounding':     callbacks.onGrounding(data); break;
           case 'done':          callbacks.onDone(data); break;
           case 'error':         callbacks.onError(data.detail); break;

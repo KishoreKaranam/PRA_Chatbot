@@ -276,6 +276,10 @@ async def chat_stream(
 
         confidence = answer_svc._estimate_confidence(validated_ev, modes_used)
 
+        # Tell the UI the answer is complete and the evidence check has started,
+        # so it can show "Checking sources…" instead of a frozen cursor.
+        yield _sse("reviewing", {})
+
         # ── Output validation / grounding review layer ────────────────────────
         # Reviews the completed answer against the retrieved evidence and reports
         # what % of it is grounded in the documents. Non-fatal on failure.
@@ -288,6 +292,10 @@ async def chat_stream(
         except Exception as exc:
             logger.warning("stream_grounding_review_failed", error=str(exc))
 
+        # Send the evidence check to the UI first; saving can happen after.
+        if grounding_report is not None:
+            yield _sse("grounding", grounding_report.model_dump())
+
         # ── Persist the turn (mirrors node_save_to_db, run manually since we
         # bypassed the graph's generate_answer → save_to_db tail) ─────────────
         accumulated["answer"] = full_answer
@@ -297,9 +305,6 @@ async def chat_stream(
             await node_save_to_db(accumulated, {"configurable": {"db": db}})
         except Exception as exc:
             logger.warning("stream_save_to_db_failed", error=str(exc))
-
-        if grounding_report is not None:
-            yield _sse("grounding", grounding_report.model_dump())
 
         yield _sse("done", {
             "confidence": confidence,

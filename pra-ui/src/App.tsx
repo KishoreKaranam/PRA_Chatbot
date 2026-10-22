@@ -189,9 +189,16 @@ export default function App() {
               streamRef.current.answer += text;
               snapshot();
             },
+            // Answer finished; the evidence check is running
+            onReviewing: () => {
+              if (!streamRef.current) return;
+              streamRef.current.reviewing = true;
+              snapshot();
+            },
             // Output review layer — % of answer grounded in evidence
             onGrounding: (report) => {
               if (!streamRef.current) return;
+              streamRef.current.reviewing = false;
               streamRef.current.grounding = report;
               snapshot();
             },
@@ -199,6 +206,7 @@ export default function App() {
             onDone: (data) => {
               if (!streamRef.current) return;
               streamRef.current.confidence = data.confidence;
+              streamRef.current.reviewing = false;
               snapshot();
               setHistoryVersion((v) => v + 1);
             },

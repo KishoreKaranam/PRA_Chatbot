@@ -159,6 +159,11 @@ body {
 .grounding__source--nolink:hover { border-color: var(--border); text-decoration: none; }
 
 .grounding__badge--static, .grounding__badge--static:hover { cursor: default; background: var(--surface-sunken); }
+/* "Checking sources…" while the evidence check runs */
+.grounding__checking { display: inline-flex; align-items: center; gap: 7px; padding: 4px 10px; border-radius: var(--radius-full); font-size: 11px; font-weight: 500; color: var(--text-muted); background: var(--surface-sunken); border: 1px solid var(--border); }
+.grounding__spinner { width: 10px; height: 10px; border-radius: 50%; border: 2px solid var(--border); border-top-color: var(--primary); animation: grounding-spin .8s linear infinite; }
+@keyframes grounding-spin { to { transform: rotate(360deg); } }
+
 /* ── Inline source chips (next to paragraphs, bullets, table rows) ─────────── */
 .inline-sources { display: inline-flex; flex-wrap: wrap; gap: 4px; margin-left: 6px; vertical-align: middle; }
 .inline-sources--block { display: flex; margin: 6px 0 10px; }

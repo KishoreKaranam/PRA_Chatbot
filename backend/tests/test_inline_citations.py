@@ -8,8 +8,27 @@ from app.infrastructure.llm.answer_service import AnswerGenerationService
 from app.prompts.grounding import GROUNDING_SYSTEM_PROMPT
 
 
-def test_prompt_asks_for_answer_quote():
-    assert '"answer_quote"' in GROUNDING_SYSTEM_PROMPT
+def test_prompt_asks_for_short_claims_with_line_numbers():
+    assert '"line"' in GROUNDING_SYSTEM_PROMPT
+    assert '"note"' not in GROUNDING_SYSTEM_PROMPT      # per-claim notes removed (slow, not shown)
+
+
+def test_answer_is_sent_with_line_numbers():
+    from app.prompts.grounding import build_grounding_user_message
+    msg = build_grounding_user_message("First line.\n\n- Second item", "evidence")
+    assert "L1| First line." in msg and "L3| - Second item" in msg and "L2|" not in msg
+
+
+def test_line_number_becomes_the_quote():
+    answer = "Intro sentence.\n\n- **Routing Engine** – selects the route."
+    raw = json.dumps({"claims": [
+        {"claim": "Routing Engine selects the route", "supported": True, "line": 3, "evidence_refs": ["Routing Engine"]},
+        {"claim": "Bad line number", "supported": True, "line": 99},
+    ], "summary": "ok"})
+    report = AnswerGenerationService._parse_grounding(raw, answer)
+    assert report.claims[0].answer_quote == "- **Routing Engine** – selects the route."
+    assert report.claims[0].note == ""
+    assert report.claims[1].answer_quote == ""
 
 
 def test_parse_keeps_answer_quote():

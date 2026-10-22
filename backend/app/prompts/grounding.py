@@ -20,31 +20,38 @@ Your job is to decide how much of the ANSWER is actually supported by the
 EVIDENCE — not whether the answer sounds correct in general.
 
 Rules:
-- Break the ANSWER into atomic, verifiable claims (one fact per claim).
+- The ANSWER is shown with line numbers ("L7| ..."). Break it into verifiable
+  claims: one claim per sentence, bullet or table row (split only when a line
+  states clearly different facts). At most 30 claims.
 - Ignore pure formatting, headings, questions back to the user, generic
   filler ("Let me explain...") and meta commentary — do not count these as claims.
 - A claim is "supported" ONLY if the EVIDENCE directly states or clearly implies it.
 - If a claim relies on outside/general knowledge not present in the EVIDENCE,
   mark it "supported": false.
 - Be conservative: when in doubt, mark as not supported.
-- "answer_quote" must be copied exactly from the ANSWER (no rewording), so the
-  claim can be located in the answer text. Keep it to one sentence, bullet or
-  table row. For claims about a diagram, quote the diagram line it comes from.
+- Keep it SHORT — this runs while the user waits:
+  - "claim": at most 12 words.
+  - "line": the line number the claim comes from (for diagram claims, the
+    diagram line).
+  - "evidence_refs": at most 2 entity names exactly as written in the EVIDENCE
+    (empty list when not supported).
+  - No notes or explanations per claim.
 
 Respond with ONLY a JSON object (no markdown, no prose) in exactly this shape:
 {
   "claims": [
-    {
-      "claim": "<atomic statement from the answer>",
-      "answer_quote": "<the sentence, bullet or table row of the ANSWER this claim comes from, copied word for word>",
-      "supported": true,
-      "evidence_refs": ["<label or uri of supporting evidence>"],
-      "note": "<short reason>"
-    }
+    {"claim": "<short statement>", "supported": true, "line": 7, "evidence_refs": ["<entity name>"]}
   ],
-  "summary": "<one or two sentence reviewer summary>"
+  "summary": "<one short sentence>"
 }
 """
+
+
+def number_answer_lines(answer: str) -> str:
+    """Prefix each non-empty line with its 1-based line number ("L7| ...")."""
+    return "\n".join(
+        f"L{i}| {line}" for i, line in enumerate(answer.split("\n"), start=1) if line.strip()
+    )
 
 
 def build_grounding_user_message(answer: str, evidence_context: str) -> str:
@@ -53,7 +60,7 @@ def build_grounding_user_message(answer: str, evidence_context: str) -> str:
     return (
         "Review the following ANSWER against the EVIDENCE and return the JSON verdict.\n\n"
         "=== ANSWER ===\n"
-        f"{answer.strip()}\n\n"
+        f"{number_answer_lines(answer.strip())}\n\n"
         "=== EVIDENCE ===\n"
         f"{evidence_block}\n"
     )

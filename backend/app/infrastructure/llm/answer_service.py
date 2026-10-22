@@ -276,7 +276,7 @@ class AnswerGenerationService:
 
         try:
             raw = await self._call_reviewer(answer, context)
-            report = self._parse_grounding(raw)
+            report = self._parse_grounding(raw, answer)
             if report is not None:
                 logger.info(
                     "grounding_review_ok",
@@ -346,8 +346,14 @@ class AnswerGenerationService:
             return None
 
     @classmethod
-    def _parse_grounding(cls, raw: str) -> GroundingReport | None:
-        """Convert the reviewer's JSON into a GroundingReport."""
+    def _parse_grounding(cls, raw: str, answer: str = "") -> GroundingReport | None:
+        """Convert the reviewer's JSON into a GroundingReport.
+
+        The reviewer points to the answer line each claim came from ("line");
+        that line's text is kept as `answer_quote` so the UI can show the
+        claim's source links next to it.
+        """
+        answer_lines = answer.split("\n") if answer else []
         data = cls._extract_json(raw)
         if not isinstance(data, dict):
             return None
@@ -371,8 +377,8 @@ class AnswerGenerationService:
                     claim=text,
                     supported=bool(item.get("supported", False)),
                     evidence_refs=[str(r) for r in refs],
-                    note=str(item.get("note", "")).strip(),
-                    answer_quote=str(item.get("answer_quote", "") or "").strip(),
+                    note=str(item.get("note", "") or "").strip(),
+                    answer_quote=cls._quote_for(item, answer_lines),
                 )
             )
 
@@ -390,6 +396,17 @@ class AnswerGenerationService:
             claims=claims,
             method="llm",
         )
+
+    @staticmethod
+    def _quote_for(item: dict, answer_lines: list[str]) -> str:
+        """Text of the answer line the claim came from (or the reviewer's own quote)."""
+        try:
+            line_no = int(item.get("line"))
+        except (TypeError, ValueError):
+            line_no = 0
+        if 1 <= line_no <= len(answer_lines) and answer_lines[line_no - 1].strip():
+            return answer_lines[line_no - 1].strip()
+        return str(item.get("answer_quote", "") or "").strip()
 
     def _lexical_grounding(self, answer: str, context: str) -> GroundingReport:
         """

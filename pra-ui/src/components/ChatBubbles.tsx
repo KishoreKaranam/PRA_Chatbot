@@ -144,9 +144,9 @@ export const BotBubble = memo(function BotBubble({ msg, streaming }: BotBubblePr
     setTimeout(() => setCopied(false), 2000);
   };
 
-  // Source chips are added once the evidence check has finished.
-  const showInline =
-    !streaming && !isClarification && !!msg.grounding && msg.grounding.method !== "none";
+  // Source chips are added as soon as the evidence check arrives.
+  const reviewing = Boolean(msg.reviewing) && !msg.grounding;
+  const showInline = !isClarification && !!msg.grounding && msg.grounding.method !== "none";
   const byLine = useMemo(
     () => (showInline && msg.grounding ? claimsByLine(msg.answer, msg.grounding.claims as Claim[]) : new Map<number, Claim[]>()),
     [showInline, msg.answer, msg.grounding],
@@ -246,7 +246,7 @@ export const BotBubble = memo(function BotBubble({ msg, streaming }: BotBubblePr
             <div className="warning-banner">⚠️ {msg.warning}</div>
           )}
           <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>{msg.answer}</ReactMarkdown>
-          {streaming && !isClarification && <span className="streaming-cursor" aria-hidden="true" />}
+          {streaming && !reviewing && !msg.grounding && !isClarification && <span className="streaming-cursor" aria-hidden="true" />}
 
           {/* ── Meta row (copy) ─────────────────────────────────────────── */}
           {!isClarification && (
@@ -259,7 +259,14 @@ export const BotBubble = memo(function BotBubble({ msg, streaming }: BotBubblePr
         </div>
 
         {/* ── Output review: % grounded in evidence ───────────────────────── */}
-        {!isClarification && !streaming && msg.grounding && msg.grounding.method !== "none" && (
+        {!isClarification && reviewing && (
+          <div className="grounding">
+            <span className="grounding__checking">
+              <span className="grounding__spinner" aria-hidden="true" /> Checking sources…
+            </span>
+          </div>
+        )}
+        {!isClarification && msg.grounding && msg.grounding.method !== "none" && (
           <GroundingBadge report={msg.grounding} />
         )}
       </div>
