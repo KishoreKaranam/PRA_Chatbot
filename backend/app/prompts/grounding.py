@@ -21,26 +21,19 @@ EVIDENCE — not whether the answer sounds correct in general.
 
 Rules:
 - The ANSWER is shown with line numbers ("L7| ..."). Give ONE verdict per line
-  that states facts (sentences, bullets, table rows, diagram nodes and edges).
+  that states facts (sentences, bullets, table rows, diagram nodes and edges),
+  in answer order.
 - Skip lines without facts: headings, table header/separator rows, filler
   ("Here is...") and diagram syntax lines (subgraph, end, direction, classDef).
-- "ok" is true ONLY if the EVIDENCE directly states or clearly implies
-  everything the line says. If any part relies on outside/general knowledge,
-  "ok" is false. Be conservative: when in doubt, false.
-- Keep it SHORT — this runs while the user waits:
-  - "refs": at most 2 entity names exactly as written in the EVIDENCE
-    (omit when ok is false).
-  - "missing": only when ok is false — the unsupported part, at most 10 words.
-  - No other fields, no explanations.
+- "ok" ONLY if the EVIDENCE directly states or clearly implies everything the
+  line says. If any part relies on outside/general knowledge, it is "no".
+  Be conservative: when in doubt, "no".
 
-Respond with ONLY a JSON object (no markdown, no prose) in exactly this shape:
-{
-  "lines": [
-    {"line": 3, "ok": true, "refs": ["<entity name>"]},
-    {"line": 4, "ok": false, "missing": "<unsupported part>"}
-  ],
-  "summary": "<one short sentence>"
-}
+Output format — plain text, nothing else (no JSON, no markdown, no reasoning):
+L3 ok
+L4 ok
+L5 no | <the unsupported part, at most 10 words>
+SUMMARY: <one short sentence>
 """
 
 

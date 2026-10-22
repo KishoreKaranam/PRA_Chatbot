@@ -291,12 +291,20 @@ async def chat_stream(
         # what % of it is grounded in the documents. Non-fatal on failure.
         grounding_report = None
         try:
-            grounding_report = await answer_svc.review_grounding(
+            async for kind, report in answer_svc.review_grounding_stream(
                 full_answer, validated_ev, modes_used, instructions,
-            )
-            grounding_report = await attach_sources(
-                grounding_report, validated_ev, sources_by_name=await sources_task,
-            )
+            ):
+                # Usually finished long ago (it ran while the answer streamed).
+                sources_by_name = await sources_task
+                report = await attach_sources(
+                    report, validated_ev, sources_by_name=sources_by_name,
+                    quiet=(kind == "partial"),
+                )
+                if kind == "partial":
+                    # Lines checked so far → the UI adds their source links now.
+                    yield _sse("grounding", report.model_dump())
+                else:
+                    grounding_report = report
         except Exception as exc:
             logger.warning("stream_grounding_review_failed", error=str(exc))
 

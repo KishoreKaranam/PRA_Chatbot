@@ -251,20 +251,41 @@ class AnswerGenerationService:
     ) -> GroundingReport:
         """
         Validate a generated answer against the retrieved evidence and report
-        what fraction of it is grounded in that evidence.
+        what fraction of it is grounded in that evidence (final result only).
+        """
+        report = GroundingReport(summary="No answer to review.", method="none")
+        async for kind, current in self.review_grounding_stream(answer, evidence, modes_used, instructions):
+            if kind == "final":
+                report = current
+        return report
 
-        Uses the LLM as a strict reviewer (claim-by-claim entailment). Falls back
-        to a deterministic lexical-overlap estimate if the LLM call or JSON
-        parsing fails, so the layer never breaks the response.
+    async def review_grounding_stream(
+        self,
+        answer: str,
+        evidence: list,
+        modes_used: list[str],
+        instructions: AgentInstructions,
+    ):
+        """
+        Same check as `review_grounding`, but yields progress while it runs:
+
+          ("partial", report)  each time another answer line has been checked
+          ("final", report)    once, at the end
+
+        The reviewer answers one short line per answer line ("L7 ok"), so the
+        UI can show source links line by line instead of waiting for the end.
+        Falls back to a deterministic lexical-overlap estimate if the LLM call
+        fails or its output cannot be read, so the layer never breaks.
         """
         answer = (answer or "").strip()
         context = self._build_context(evidence, instructions, purpose="review")
 
         # No answer, or nothing was retrieved → nothing to ground against.
         if not answer:
-            return GroundingReport(summary="No answer to review.", method="none")
+            yield "final", GroundingReport(summary="No answer to review.", method="none")
+            return
         if not context.strip():
-            return GroundingReport(
+            yield "final", GroundingReport(
                 grounding_score=0.0,
                 grounded_percentage=0,
                 total_claims=0,
@@ -273,10 +294,42 @@ class AnswerGenerationService:
                 summary="No document evidence was retrieved; the answer is not grounded in sources.",
                 method="none",
             )
+            return
+
+        answer_lines = answer.split("\n")
+        claims: list[GroundingClaim] = []
+        seen_lines: set[int] = set()
+        summary = ""
+        raw = ""
+        buffer = ""
+
+        def take(line_text: str) -> bool:
+            nonlocal summary
+            parsed = self._parse_verdict_line(line_text, answer_lines)
+            if parsed == "summary":
+                summary = line_text.split(":", 1)[1].strip() if ":" in line_text else ""
+                return False
+            if parsed is None or parsed["line"] in seen_lines:
+                return False
+            seen_lines.add(parsed["line"])
+            claims.append(self._claim_from_verdict(parsed, answer_lines))
+            return True
 
         try:
-            raw = await self._call_reviewer(answer, context)
-            report = self._parse_grounding(raw, answer)
+            async for chunk in self._stream_reviewer(answer, context):
+                raw += chunk
+                buffer += chunk
+                while "\n" in buffer:
+                    line_text, buffer = buffer.split("\n", 1)
+                    if take(line_text):
+                        yield "partial", self._report_from_claims(claims, "", method="partial")
+            if buffer.strip():
+                take(buffer)
+
+            report = (
+                self._report_from_claims(claims, summary, method="llm")
+                if claims else self._parse_grounding(raw, answer)   # older JSON-style output
+            )
             if report is not None:
                 logger.info(
                     "grounding_review_ok",
@@ -285,7 +338,8 @@ class AnswerGenerationService:
                     total=report.total_claims,
                     method="llm",
                 )
-                return report
+                yield "final", report
+                return
         except Exception as exc:
             logger.warning("grounding_review_llm_failed", error=str(exc))
 
@@ -296,27 +350,32 @@ class AnswerGenerationService:
             score=report.grounding_score,
             method="lexical",
         )
-        return report
+        yield "final", report
 
-    async def _call_reviewer(self, answer: str, context: str) -> str:
-        """Run the reviewer LLM pass and return its raw text output."""
+    async def _stream_reviewer(self, answer: str, context: str):
+        """Run the reviewer LLM pass, yielding its text as it is written."""
         user_message = build_grounding_user_message(answer, context)
+        max_tokens = min(self._max_tokens, 8000)
 
         if self._provider in ("anthropic", "azure_anthropic"):
-            response = await self._anthropic_client.messages.create(
+            text = ""
+            async with self._anthropic_client.messages.stream(
                 model=self._model,
-                max_tokens=min(self._max_tokens, 8000),
+                max_tokens=max_tokens,
                 system=GROUNDING_SYSTEM_PROMPT,
                 messages=[{"role": "user", "content": user_message}],
-            )
-            text = self._extract_text_from_content(response.content)
+            ) as stream:
+                async for chunk in stream.text_stream:
+                    text += chunk
+                    yield chunk
+                final = await stream.get_final_message()
             logger.info(
                 "grounding_reviewer_raw",
-                stop_reason=response.stop_reason,
-                output_tokens=response.usage.output_tokens,
+                stop_reason=final.stop_reason,
+                output_tokens=final.usage.output_tokens,
                 ending=text[-150:],
             )
-            return text
+            return
 
         response = await self._client.chat.completions.create(
             model=self._model,
@@ -324,9 +383,61 @@ class AnswerGenerationService:
                 {"role": "system", "content": GROUNDING_SYSTEM_PROMPT},
                 {"role": "user", "content": user_message},
             ],
-            max_completion_tokens=min(self._max_tokens, 8000),
+            max_completion_tokens=max_tokens,
+            stream=True,
         )
-        return response.choices[0].message.content or ""
+        async for chunk in response:
+            if chunk.choices and chunk.choices[0].delta.content:
+                yield chunk.choices[0].delta.content
+
+    # Reviewer output, one line per checked answer line:
+    #   "L7 ok"   |   "L9 no | finishes in seconds"   |   "SUMMARY: ..."
+    _VERDICT_RE = re.compile(
+        r"^\s*[-*]?\s*L?\s*(\d+)\s*[:|.)\-]?\s*(ok|yes|true|no|false)\b\s*[|:\-–—]?\s*(.*)$",
+        re.IGNORECASE,
+    )
+
+    @classmethod
+    def _parse_verdict_line(cls, text: str, answer_lines: list[str]):
+        """One reviewer output line → {"line", "ok", "missing"}, "summary", or None."""
+        stripped = text.strip().strip("`")
+        if stripped.upper().startswith("SUMMARY"):
+            return "summary"
+        match = cls._VERDICT_RE.match(stripped)
+        if not match:
+            return None
+        line_no = int(match.group(1))
+        if not (1 <= line_no <= len(answer_lines)) or not answer_lines[line_no - 1].strip():
+            return None
+        ok = match.group(2).lower() in ("ok", "yes", "true")
+        return {"line": line_no, "ok": ok, "missing": "" if ok else match.group(3).strip()}
+
+    @classmethod
+    def _claim_from_verdict(cls, verdict: dict, answer_lines: list[str]) -> GroundingClaim:
+        line = answer_lines[verdict["line"] - 1]
+        text = cls._plain_line(line)
+        return GroundingClaim(
+            claim=text if verdict["ok"] else (verdict["missing"] or text),
+            supported=verdict["ok"],
+            evidence_refs=[],
+            answer_quote=line.strip(),
+        )
+
+    @classmethod
+    def _report_from_claims(cls, claims: list[GroundingClaim], summary: str, method: str) -> GroundingReport:
+        total = len(claims)
+        supported = sum(1 for c in claims if c.supported)
+        score = (supported / total) if total else 0.0
+        return GroundingReport(
+            grounding_score=round(score, 4),
+            grounded_percentage=round(score * 100),
+            total_claims=total,
+            supported_claims=supported,
+            verdict=cls._verdict(score, total),
+            summary=summary or cls._default_summary(score, supported, total),
+            claims=list(claims),
+            method=method,
+        )
 
     @staticmethod
     def _extract_json(text: str) -> dict | None:

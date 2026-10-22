@@ -145,7 +145,10 @@ export const BotBubble = memo(function BotBubble({ msg, streaming }: BotBubblePr
   };
 
   // Source chips are added as soon as the evidence check arrives.
-  const reviewing = Boolean(msg.reviewing) && !msg.grounding;
+  // While the check runs, the backend sends the lines checked so far
+  // (method "partial"): their chips appear right away, the % comes at the end.
+  const partial = msg.grounding?.method === "partial";
+  const reviewing = (Boolean(msg.reviewing) && !msg.grounding) || (partial && Boolean(streaming));
   const showInline = !isClarification && !!msg.grounding && msg.grounding.method !== "none";
   const byLine = useMemo(
     () => (showInline && msg.grounding ? claimsByLine(msg.answer, msg.grounding.claims as Claim[]) : new Map<number, Claim[]>()),
@@ -263,10 +266,11 @@ export const BotBubble = memo(function BotBubble({ msg, streaming }: BotBubblePr
           <div className="grounding">
             <span className="grounding__checking">
               <span className="grounding__spinner" aria-hidden="true" /> Checking sources…
+              {partial && msg.grounding && ` ${msg.grounding.total_claims} lines checked`}
             </span>
           </div>
         )}
-        {!isClarification && msg.grounding && msg.grounding.method !== "none" && (
+        {!isClarification && msg.grounding && msg.grounding.method !== "none" && !partial && (
           <GroundingBadge report={msg.grounding} />
         )}
       </div>

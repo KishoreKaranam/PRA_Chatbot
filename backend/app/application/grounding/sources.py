@@ -210,6 +210,7 @@ async def attach_sources(
     evidence: list,
     client=None,
     sources_by_name: dict[str, list[str]] | None = None,
+    quiet: bool = False,
 ) -> GroundingReport | None:
     """Attach source documents to every supported claim. Never raises."""
     if report is None or not report.claims:
@@ -243,12 +244,13 @@ async def attach_sources(
                     used.append(source)
             claims.append(claim.model_copy(update={"sources": [ref(s) for s in claim_sources]}))
 
-        logger.info(
-            "grounding_sources_attached",
-            documents=used,
-            claims_with_sources=sum(1 for c in claims if c.sources),
-            total_claims=len(claims),
-        )
+        if not quiet:
+            logger.info(
+                "grounding_sources_attached",
+                documents=used,
+                claims_with_sources=sum(1 for c in claims if c.sources),
+                total_claims=len(claims),
+            )
         return report.model_copy(update={
             "claims": claims,
             "documents": [ref(s) for s in used],
