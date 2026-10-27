@@ -5,6 +5,7 @@ import re
 from typing import Any
 
 from app.infrastructure.knowledge_graph.neo4j.client import Neo4jClient
+from app.infrastructure.retrieval.neo4j import pra_structure
 from app.models.schemas import Neo4jGraphEvidence, Neo4jNode, Neo4jRelationship
 
 
@@ -143,21 +144,49 @@ class Neo4jGraphRetrievalService:
         self._max_results = max_results
 
     async def retrieve(self, question: str) -> Neo4jGraphEvidence:
-        """Resolve a named domain and return only its controlled relationships."""
-        entity = await self._resolve_domain(question)
+        """Resolve named domains and return the matching controlled graph evidence."""
+        entities = await self._resolve_domains(question)
+        entity = entities[0] if entities else None
+
+        # Architecture / overview / "all domains" questions: the complete PRA map
+        # (unless they are about one or two specific domains).
+        if pra_structure.is_overview_question(question) and (not entities or len(entities) >= 3):
+            return await pra_structure.retrieve_pra_map(self._client)
+
         pattern_name, pattern_details = self._find_pattern(question, entity is not None)
 
         if not pattern_details:
-            if entity is not None or self._looks_domain_scoped(question):
+            # A named domain without one of the fixed question types
+            # ("What does FX Management do?") gets that domain's profile.
+            if entities:
+                return await pra_structure.retrieve_domain_profiles(self._client, entities)
+            if self._looks_domain_scoped(question):
                 return Neo4jGraphEvidence()
             return await self._retrieve_generic(question)
 
         if pattern_details.get("kind") == "domain":
             if entity is None:
                 return Neo4jGraphEvidence()
-            return await self._retrieve_domain_pattern(pattern_name, pattern_details, entity)
+            evidence = await self._retrieve_domain_pattern(pattern_name, pattern_details, entity)
+            if evidence.result_count == 0:
+                # e.g. "functions of FX Management": supporting domains have no
+                # CONTAINS->Function links, so show their profile instead.
+                return await pra_structure.retrieve_domain_profiles(self._client, entities)
+            return evidence
 
         return await self._retrieve_generic_pattern(pattern_name, pattern_details)
+
+    async def _resolve_domains(self, question: str) -> list[dict[str, Any]]:
+        """All domain / supporting-domain names mentioned in the question, in order of mention.
+
+        Tolerant of '&' vs 'and', 'FX' for 'Foreign Exchange', and '(AML)'-style suffixes.
+        """
+        rows = await self._client.execute_read_query(
+            self._DOMAIN_RESOLUTION_QUERY,
+            domain_labels=self._DOMAIN_LABELS,
+            limit=200,
+        )
+        return pra_structure.find_named_domains(question, rows)
 
     async def _resolve_domain(self, question: str) -> dict[str, Any] | None:
         """Find an exact domain name contained in the question."""

@@ -126,6 +126,8 @@ class Neo4jGraphEvidence(BaseModel):
     results: list[Neo4jNode] = Field(default_factory=list)
     relationships: list[Neo4jRelationship] = Field(default_factory=list)
     result_count: int = 0
+    # Ready-to-read text for PRA map / domain profile lookups (empty otherwise).
+    summary: str = ""
 
 
 # ── Grounding / output review ─────────────────────────────────────────────────

@@ -750,7 +750,14 @@ class AnswerGenerationService:
             stats[key] = stats.get(key, 0) + n
 
         for ev in evidence_list:
-            if isinstance(ev, SparqlEvidence) and ev.triple_count > 0:
+            if isinstance(ev, Neo4jGraphEvidence) and ev.summary:
+                # PRA map / domain profiles: already a compact, readable summary.
+                parts.append("=== Neo4j Graph Results (PRA structure) ===")
+                parts.append(ev.summary)
+                parts.append("")
+                count("graph_entities_sent", len(ev.results))
+
+            elif isinstance(ev, SparqlEvidence) and ev.triple_count > 0:
                 parts.append("=== SPARQL CONSTRUCT Results (ontology sub-graph) ===")
                 for t in ev.triples[:60]:  # cap to avoid token overflow
                     parts.append(f"  <{t.subject}> <{t.predicate}> {t.obj} .")
