@@ -11,13 +11,21 @@ HISTORY = [ConversationTurn(role="user", content="What are business functions in
            ConversationTurn(role="assistant", content="...")]
 
 
+haiku_calls: list[str] = []
+
+
 def _run(question, history, monkeypatch):
     async def fake_find_entities(db, text, top_k=5):
         names = ["Foreign Exchange Management", "Payment Processing", "Settlement"]
         return [{"label": n} for n in names if n.lower() in text.lower()]
 
     monkeypatch.setattr(nodes, "find_entities", fake_find_entities)
-    monkeypatch.setattr(nodes, "_get_haiku_client", lambda: (_ for _ in ()).throw(RuntimeError("no haiku in tests")))
+    haiku_calls.clear()
+
+    def fake_haiku():
+        haiku_calls.append(question)
+        raise RuntimeError("no haiku in tests")
+    monkeypatch.setattr(nodes, "_get_haiku_client", fake_haiku)
     state = {"raw_question": question, "conversation_history": history}
     return asyncio.run(nodes.node_resolve_context(state, {"configurable": {"db": object()}}))
 
@@ -30,6 +38,13 @@ def test_question_naming_its_subject_is_not_rewritten(monkeypatch):
     out = _run(Q2, HISTORY, monkeypatch)
     assert out["rewritten_question"] == Q2                 # was: "... and Payment Processing journey stages ..."
     assert out["is_followup"] is False
+    assert haiku_calls == []                               # not even sent to the rewriting model
+
+
+def test_pronoun_before_the_named_entity_can_still_refer_back(monkeypatch):
+    out = _run("Compare it with Settlement", HISTORY, monkeypatch)
+    assert out["rewritten_question"] == "Compare Payment Processing with Settlement"
+    assert out["is_followup"] is True
 
 
 def test_real_follow_up_is_still_resolved(monkeypatch):

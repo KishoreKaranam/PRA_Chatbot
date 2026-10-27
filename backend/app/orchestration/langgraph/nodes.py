@@ -298,6 +298,23 @@ async def node_load_history(state: PRAState, config: RunnableConfig) -> dict:
 # Node 2 — node_resolve_context
 # ════════════════════════════════════════════════════════════════════════════════
 
+def _pronoun_follows_entity(question: str, entity_labels: list[str]) -> bool:
+    """True when the question names a PRA entity before its first pronoun.
+
+    "What does FX Management do and which stages does it support?" -> "it" is FX
+    Management, so the question is self-contained and must not be rewritten.
+    "Compare it with FX Management" -> "it" comes first, so it may refer back.
+    """
+    pronoun = PRONOUN_RE.search(question)
+    if not pronoun or not entity_labels:
+        return False
+    lowered = question.lower()
+    positions = [lowered.find(label.lower()) for label in entity_labels]
+    known = [p for p in positions if p >= 0]
+    first_entity = min(known) if known else 0     # matched via an alias: assume it comes first
+    return first_entity < pronoun.start()
+
+
 async def node_resolve_context(state: PRAState, config: RunnableConfig) -> dict:
     """
     3-layer context resolution — cheapest layer tried first.
@@ -350,17 +367,19 @@ async def node_resolve_context(state: PRAState, config: RunnableConfig) -> dict:
 
     # ── Layer B: Entity cache substitution ────────────────────────────────────
     entity_confidence = 0.0
+    refers_to_own_subject = False
 
     if db is not None:
         try:
             # Find entities in the raw question
             matches = await find_entities(db, raw, top_k=5)
             entities_mentioned = [m["label"] for m in matches]
+            refers_to_own_subject = _pronoun_follows_entity(raw, entities_mentioned)
 
             # If pronoun found and we have history, try resolving from history entities.
             # Not when the question names its own entity: in "What does FX Management
             # do and which stages does it support?", "it" means FX Management.
-            if has_pronoun and history and not matches:
+            if has_pronoun and history and not refers_to_own_subject:
                 last_user_text = next(
                     (t.content for t in reversed(history) if t.role == "user"), ""
                 )
@@ -385,7 +404,7 @@ async def node_resolve_context(state: PRAState, config: RunnableConfig) -> dict:
             logger.warning("node_resolve_context_layer_b_failed", error=str(exc))
 
     # ── Layer C: Claude Haiku (only if still ambiguous) ───────────────────────
-    if has_pronoun and entity_confidence < 0.8 and history:
+    if has_pronoun and entity_confidence < 0.8 and history and not refers_to_own_subject:
         try:
             haiku, haiku_model, haiku_provider = _get_haiku_client()
             history_text = _format_history(history)
