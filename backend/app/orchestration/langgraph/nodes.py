@@ -69,9 +69,11 @@ _haiku_client: anthropic.AsyncAnthropic | None = None
 _haiku_client_azure: Any | None = None
 
 MAX_HISTORY_TURNS = 6       # sliding window — 3 user+assistant pairs
+# Words that may point back to something said earlier. "which" is not here:
+# it starts a question ("which journey stages...") and must never be replaced.
 PRONOUN_RE = re.compile(
     r"\b(it|its|they|them|their|those|that|this|these|he|she|"
-    r"which|the function|the domain|the rule|the scheme|the activity)\b",
+    r"the function|the domain|the rule|the scheme|the activity)\b",
     re.IGNORECASE,
 )
 
@@ -355,8 +357,10 @@ async def node_resolve_context(state: PRAState, config: RunnableConfig) -> dict:
             matches = await find_entities(db, raw, top_k=5)
             entities_mentioned = [m["label"] for m in matches]
 
-            # If pronoun found and we have history, try resolving from history entities
-            if has_pronoun and history:
+            # If pronoun found and we have history, try resolving from history entities.
+            # Not when the question names its own entity: in "What does FX Management
+            # do and which stages does it support?", "it" means FX Management.
+            if has_pronoun and history and not matches:
                 last_user_text = next(
                     (t.content for t in reversed(history) if t.role == "user"), ""
                 )
