@@ -238,6 +238,7 @@ export interface HistoryTurn {
   confidence: number | null;
   modes_used: string[];
   timestamp: string | null;
+  grounding?: GroundingReport | null;   // evidence check saved with assistant answers
 }
 
 export interface SessionHistoryResponse {

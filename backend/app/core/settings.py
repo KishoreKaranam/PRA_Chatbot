@@ -81,6 +81,10 @@ class Settings(BaseSettings):
     default_strict_ontology_mode: bool = False
     default_confidence_threshold: float = 0.3
 
+    # Chat history: conversations are kept this many days after their last
+    # message, then deleted automatically (checked at startup and once a day).
+    chat_retention_days: int = 365
+
     # PostgreSQL
     database_url: str = "postgresql+asyncpg://postgres:postgres@localhost:5432/pra_chatbot"
     db_pool_size: int = 10

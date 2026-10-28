@@ -55,6 +55,7 @@ class HistoryTurn(BaseModel):
     entities: list[str]
     confidence: float | None
     modes_used: list[str]
+    grounding: dict[str, Any] | None = None   # evidence check for assistant answers
     timestamp: str | None           # ISO 8601
 
 
@@ -110,7 +111,7 @@ async def create_new_session(
 @router.get("", response_model=SessionListResponse)
 async def get_all_sessions(
     user_id: str | None = None,
-    limit: int = 50,
+    limit: int = 500,
     db: AsyncSession = Depends(get_db),
 ) -> SessionListResponse:
     """

@@ -16,6 +16,24 @@ configure_logging()
 get_settings.cache_clear()
 
 
+async def _chat_retention_loop() -> None:
+    """Delete expired conversations now, then once every 24 hours."""
+    from app.core.log_config import get_logger
+    from app.infrastructure.persistence.postgres.database import AsyncSessionLocal
+    from app.infrastructure.persistence.postgres.session_store import delete_expired_sessions
+
+    logger = get_logger(__name__)
+    days = get_settings().chat_retention_days
+    while True:
+        try:
+            async with AsyncSessionLocal() as db:
+                deleted = await delete_expired_sessions(db, days)
+            logger.info("chat_retention_cleanup", retention_days=days, **deleted)
+        except Exception as exc:
+            logger.warning("chat_retention_cleanup_failed", error=str(exc))
+        await asyncio.sleep(24 * 60 * 60)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Pre-warm caches on startup for faster first-query response."""
@@ -45,11 +63,15 @@ async def lifespan(app: FastAPI):
     except Exception as exc:
         _logger.warning("startup_langgraph_compile_failed", error=str(exc))
 
-    # 4 — Pre-build the orchestrator + similarity index in background
+    # 4 — Chat retention: delete conversations older than CHAT_RETENTION_DAYS (default 365)
+    retention_task = asyncio.create_task(_chat_retention_loop())
+
+    # 5 — Pre-build the orchestrator + similarity index in background
     from app.api.chat import _get_orchestrator
     orch = _get_orchestrator()
     asyncio.create_task(_warm_similarity(orch))
     yield
+    retention_task.cancel()
 
     # Shutdown — close Neo4j driver
     try:

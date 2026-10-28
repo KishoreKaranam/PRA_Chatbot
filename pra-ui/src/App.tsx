@@ -267,7 +267,7 @@ export default function App() {
       const turns = await loadSessionHistory(id);
       const loaded: Message[] = turns.map((t) => {
         if (t.role === "user") {
-          return { role: "user", content: t.rewritten_content || t.raw_content, timestamp: new Date(t.timestamp ?? Date.now()) };
+          return { role: "user", content: t.raw_content, timestamp: new Date(t.timestamp ?? Date.now()) };
         }
         const response: ChatResponse = {
           question: "",
@@ -280,6 +280,7 @@ export default function App() {
           confidence: t.confidence,
           warning: null,
           clarification_needed: null,
+          grounding: t.grounding ?? null,   // source chips + % badge, as when first answered
         };
         return { role: "assistant", response, timestamp: new Date(t.timestamp ?? Date.now()) };
       });

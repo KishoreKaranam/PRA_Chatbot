@@ -77,7 +77,7 @@ async def increment_message_count(db: AsyncSession, session_id: str) -> None:
 async def list_sessions(
     db: AsyncSession,
     user_id: str | None = None,
-    limit: int = 50,
+    limit: int = 500,
 ) -> list[dict[str, Any]]:
     """
     Return all sessions (most-recently-active first), each annotated with
@@ -85,7 +85,14 @@ async def list_sessions(
 
     Used by:  GET /session  (chat-history sidebar, like ChatGPT/Claude)
     """
-    query = select(Session).order_by(Session.last_active.desc()).limit(limit)
+    # Only sessions that have messages: empty ones (created by "New Chat" or by
+    # opening the app) must not take up places in the list.
+    query = (
+        select(Session)
+        .where(Session.message_count > 0)
+        .order_by(Session.last_active.desc())
+        .limit(limit)
+    )
     if user_id is not None:
         query = query.where(Session.user_id == user_id)
 
@@ -117,6 +124,40 @@ async def list_sessions(
             "message_count": s.message_count,
         })
     return output
+
+
+async def delete_expired_sessions(db: AsyncSession, retention_days: int) -> dict[str, int]:
+    """
+    Retention: delete conversations whose last message is older than
+    `retention_days` (their turns go with them via ON DELETE CASCADE), the
+    matching retrieval logs, and empty sessions older than one day.
+
+    Called at startup and once a day (main.py).
+    """
+    from datetime import timedelta
+    from sqlalchemy import and_, delete as sql_delete, or_
+
+    now = datetime.utcnow()
+    cutoff = now - timedelta(days=retention_days)
+    expired = (
+        select(Session.session_id)
+        .where(or_(
+            Session.last_active < cutoff,
+            and_(Session.message_count == 0, Session.created_at < now - timedelta(days=1)),
+        ))
+        .scalar_subquery()
+    )
+    turns = await db.execute(sql_delete(ConversationTurn).where(ConversationTurn.session_id.in_(expired)))
+    sessions = await db.execute(sql_delete(Session).where(Session.session_id.in_(
+        select(Session.session_id).where(or_(
+            Session.last_active < cutoff,
+            and_(Session.message_count == 0, Session.created_at < now - timedelta(days=1)),
+        ))
+    )))
+    logs = await db.execute(sql_delete(RetrievalLog).where(RetrievalLog.timestamp < cutoff))
+    await db.commit()
+    return {"sessions": sessions.rowcount or 0, "turns": turns.rowcount or 0,
+            "retrieval_logs": logs.rowcount or 0}
 
 
 async def delete_session(db: AsyncSession, session_id: str) -> bool:
@@ -152,6 +193,7 @@ async def save_turn(
     entities: list[str] | None = None,
     confidence: float | None = None,
     modes_used: list[str] | None = None,
+    grounding: dict[str, Any] | None = None,
 ) -> ConversationTurn:
     """
     Persist a single conversation turn (user question or assistant answer).
@@ -185,6 +227,7 @@ async def save_turn(
         entities=entities or [],
         confidence=confidence,
         modes_used=modes_used or [],
+        grounding=grounding,
         timestamp=datetime.utcnow(),
     )
     db.add(turn)
@@ -271,6 +314,7 @@ async def load_history_full(
             "entities": row.entities or [],
             "confidence": row.confidence,
             "modes_used": row.modes_used or [],
+            "grounding": row.grounding,
             "timestamp": row.timestamp.isoformat() if row.timestamp else None,
         }
         for row in rows

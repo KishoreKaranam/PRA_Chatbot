@@ -770,6 +770,15 @@ async def node_validate_output(state: PRAState) -> dict:
 # Node 9 — node_save_to_db
 # ════════════════════════════════════════════════════════════════════════════════
 
+def _grounding_dict(report: Any) -> dict | None:
+    """GroundingReport (or dict) → JSON-safe dict for storage, else None."""
+    if report is None:
+        return None
+    if hasattr(report, "model_dump"):
+        return report.model_dump(mode="json")
+    return report if isinstance(report, dict) else None
+
+
 async def node_save_to_db(state: PRAState, config: RunnableConfig) -> dict:
     """
     Persist the completed turn to PostgreSQL.
@@ -850,6 +859,7 @@ async def node_save_to_db(state: PRAState, config: RunnableConfig) -> dict:
             answer,
             confidence=confidence,
             modes_used=retrieval_modes,
+            grounding=_grounding_dict(state.get("grounding_report")),
         )
         logger.info("node_save_to_db_assistant_turn_ok", session_id=session_id)
     except Exception as exc:
