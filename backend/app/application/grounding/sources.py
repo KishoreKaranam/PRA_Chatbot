@@ -205,6 +205,23 @@ async def prefetch_sources(evidence: list, client=None) -> dict[str, list[str]] 
         return None
 
 
+def sources_payload(sources_by_name: dict[str, list[str]] | None) -> dict[str, list[dict]]:
+    """{PRA name: [document refs]} for the UI, so chips can appear while the answer streams."""
+    if not sources_by_name:
+        return {}
+    refs: dict[str, dict] = {}
+    out: dict[str, list[dict]] = {}
+    for name, sources in sources_by_name.items():
+        docs = []
+        for source in sources[:MAX_SOURCES_PER_CLAIM]:
+            if source not in refs:
+                refs[source] = make_document_ref(source).model_dump()
+            docs.append(refs[source])
+        if docs:
+            out[name] = docs
+    return out
+
+
 async def attach_sources(
     report: GroundingReport | None,
     evidence: list,

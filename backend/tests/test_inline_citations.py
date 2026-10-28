@@ -157,3 +157,12 @@ def test_stream_falls_back_when_reviewer_fails():
     svc._stream_reviewer = broken
     events = _collect(svc, ins)
     assert events[-1][0] == "final" and events[-1][1].method == "lexical"
+
+
+def test_sources_payload_maps_names_to_document_links():
+    from app.application.grounding.sources import sources_payload
+    out = sources_payload({"Routing Engine": ["PRA Functional descriptions for Payments Journey.xlsx"],
+                           "Nothing": []})
+    assert list(out) == ["Routing Engine"]
+    assert out["Routing Engine"][0]["name"] == "PRA Functional descriptions for Payments Journey.xlsx"
+    assert sources_payload(None) == {}

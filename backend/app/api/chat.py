@@ -34,7 +34,7 @@ from app.orchestration.langgraph.nodes import _get_answer_service, _get_orchestr
 from app.orchestration.langgraph.state import PRAState, make_initial_state
 from app.models.schemas import AgentInstructions, ChatRequest, ChatResponse, ConversationTurn, Neo4jGraphEvidence
 from app.infrastructure.configuration.config_service import get_config_service
-from app.application.grounding.sources import attach_sources, prefetch_sources
+from app.application.grounding.sources import attach_sources, prefetch_sources, sources_payload
 from app.core.log_config import get_logger
 
 router = APIRouter()
@@ -266,6 +266,7 @@ async def chat_stream(
         # The source-document lookup only needs the evidence, so start it now
         # and let it run while the answer streams (saves a few seconds later).
         sources_task = asyncio.create_task(prefetch_sources(validated_ev))
+        sources_sent = False
 
         try:
             async for token in answer_svc.generate_stream(
@@ -274,6 +275,13 @@ async def chat_stream(
             ):
                 full_answer += token
                 yield _sse("token", {"text": token})
+                # As soon as the document lookup is done, send it: the UI then
+                # shows source chips on each line as it is written.
+                if not sources_sent and sources_task.done():
+                    sources_sent = True
+                    payload = sources_payload(sources_task.result())
+                    if payload:
+                        yield _sse("sources", {"names": payload})
         except Exception as exc:
             logger.error("answer_stream_failed", error=str(exc))
             sources_task.cancel()
@@ -281,6 +289,11 @@ async def chat_stream(
             return
 
         confidence = answer_svc._estimate_confidence(validated_ev, modes_used)
+
+        if not sources_sent:          # very short answer: lookup finished after the last token
+            payload = sources_payload(await sources_task)
+            if payload:
+                yield _sse("sources", {"names": payload})
 
         # Tell the UI the answer is complete and the evidence check has started,
         # so it can show "Checking sources…" instead of a frozen cursor.

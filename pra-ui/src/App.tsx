@@ -189,6 +189,12 @@ export default function App() {
               streamRef.current.answer += text;
               snapshot();
             },
+            // Documents behind each PRA name: chips appear while the answer streams
+            onSources: (names) => {
+              if (!streamRef.current) return;
+              streamRef.current.sources_map = names;
+              snapshot();
+            },
             // Answer finished; the evidence check is running
             onReviewing: () => {
               if (!streamRef.current) return;

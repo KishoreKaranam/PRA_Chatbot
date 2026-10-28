@@ -7,8 +7,8 @@ import remarkGfm from "remark-gfm";
 import type { ChatResponse } from "../api";
 import type { GroundingReport } from "../api";
 import { MermaidDiagram } from "./MermaidDiagram";
-import { claimsByLine, claimsInRange, groupSources, shortDocName } from "./inlineSources";
-import type { Claim } from "./inlineSources";
+import { buildChipGroups, groupsInRange, shortDocName } from "./inlineSources";
+import type { ChipGroup, Claim } from "./inlineSources";
 
 interface UserBubbleProps { text: string; }
 interface BotBubbleProps { msg: ChatResponse; streaming?: boolean; }
@@ -73,13 +73,18 @@ function claimList(claims: string[]): string {
   return claims.map((c) => `• ${c}`).join("\n");
 }
 
-function InlineSources({ claims, block }: { claims: Claim[]; block?: boolean }) {
-  if (claims.length === 0) return null;
-  const { docs, verifiedNoDoc, unsupported } = groupSources(claims);
-  if (docs.length === 0 && verifiedNoDoc.length === 0 && unsupported.length === 0) return null;
+function covers(lines: string[], lineCount: number): string {
+  const head = lineCount > 1 ? `Supports these ${lineCount} lines:` : "Supports:";
+  return `${head}\n${claimList(lines)}`;
+}
+
+// One row of chips for a group of consecutive lines that share the same documents.
+function InlineSources({ group, block }: { group: ChipGroup; block?: boolean }) {
+  const { docs, supported, kb, unsupported, lineCount } = group;
+  if (docs.length === 0 && kb.length === 0 && unsupported.length === 0) return null;
   return (
     <span className={`inline-sources${block ? " inline-sources--block" : ""}`}>
-      {docs.map(({ doc, claims: supported }) =>
+      {docs.map((doc) =>
         doc.url ? (
           <a
             key={doc.name}
@@ -87,7 +92,7 @@ function InlineSources({ claims, block }: { claims: Claim[]; block?: boolean }) 
             href={doc.url}
             target="_blank"
             rel="noopener noreferrer"
-            title={`${doc.name}\n\nSupports:\n${claimList(supported)}`}
+            title={`${doc.name}\n\n${covers(supported, lineCount)}`}
           >
             <FileText size={10} /> {shortDocName(doc.name)}
           </a>
@@ -95,14 +100,14 @@ function InlineSources({ claims, block }: { claims: Claim[]; block?: boolean }) 
           <span
             key={doc.name}
             className="inline-source inline-source--nolink"
-            title={`${doc.name} (no PDF copy)\n\nSupports:\n${claimList(supported)}`}
+            title={`${doc.name} (no PDF copy)\n\n${covers(supported, lineCount)}`}
           >
             <FileText size={10} /> {shortDocName(doc.name)}
           </span>
         ),
       )}
-      {docs.length === 0 && verifiedNoDoc.length > 0 && (
-        <span className="inline-source inline-source--nolink" title={`Found in the PRA knowledge base:\n${claimList(verifiedNoDoc)}`}>
+      {docs.length === 0 && kb.length > 0 && (
+        <span className="inline-source inline-source--nolink" title={`Found in the PRA knowledge base:\n${claimList(kb)}`}>
           <Check size={10} /> PRA knowledge base
         </span>
       )}
@@ -149,15 +154,22 @@ export const BotBubble = memo(function BotBubble({ msg, streaming }: BotBubblePr
   // (method "partial"): their chips appear right away, the % comes at the end.
   const partial = msg.grounding?.method === "partial";
   const reviewing = (Boolean(msg.reviewing) && !msg.grounding) || (partial && Boolean(streaming));
-  const showInline = !isClarification && !!msg.grounding && msg.grounding.method !== "none";
-  const byLine = useMemo(
-    () => (showInline && msg.grounding ? claimsByLine(msg.answer, msg.grounding.claims as Claim[]) : new Map<number, Claim[]>()),
-    [showInline, msg.answer, msg.grounding],
+  // Chips appear line by line while the answer is written (from `sources_map`),
+  // are confirmed or flagged by the evidence check, and are grouped by source.
+  const checked = !!msg.grounding && msg.grounding.method !== "none";
+  const answerComplete = !streaming || Boolean(msg.reviewing) || !!msg.grounding;
+  const chipGroups = useMemo(
+    () => isClarification ? new Map<number, ChipGroup>() : buildChipGroups(msg.answer, {
+      claims: checked ? (msg.grounding!.claims as Claim[]) : undefined,
+      sources: msg.sources_map ?? null,
+      complete: answerComplete,
+    }),
+    [isClarification, msg.answer, msg.grounding, checked, msg.sources_map, answerComplete],
   );
   const chipsFor = (node: HastNode | undefined, endLine?: number, block?: boolean) => {
-    if (!showInline || !node?.position) return null;
-    const claims = claimsInRange(byLine, node.position.start.line, endLine ?? node.position.end.line);
-    return claims.length ? <InlineSources claims={claims} block={block} /> : null;
+    if (!node?.position) return null;
+    const group = groupsInRange(chipGroups, node.position.start.line, endLine ?? node.position.end.line);
+    return group ? <InlineSources group={group} block={block} /> : null;
   };
 
   // Render ```mermaid fenced blocks as downloadable pictures; all other
