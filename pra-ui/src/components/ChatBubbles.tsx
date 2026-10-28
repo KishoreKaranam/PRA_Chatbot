@@ -7,8 +7,8 @@ import remarkGfm from "remark-gfm";
 import type { ChatResponse } from "../api";
 import type { GroundingReport } from "../api";
 import { MermaidDiagram } from "./MermaidDiagram";
-import { buildChipGroups, groupsInRange, shortDocName } from "./inlineSources";
-import type { ChipGroup, Claim } from "./inlineSources";
+import { buildChipLayout, shortDocName, warningsInRange } from "./inlineSources";
+import type { ChipGroup, ChipLayout, Claim } from "./inlineSources";
 
 interface UserBubbleProps { text: string; }
 interface BotBubbleProps { msg: ChatResponse; streaming?: boolean; }
@@ -84,6 +84,7 @@ function InlineSources({ group, block }: { group: ChipGroup; block?: boolean }) 
   if (docs.length === 0 && kb.length === 0 && unsupported.length === 0) return null;
   return (
     <span className={`inline-sources${block ? " inline-sources--block" : ""}`}>
+      {block && (docs.length > 0 || kb.length > 0) && <span className="inline-sources__label">Sources</span>}
       {docs.map((doc) =>
         doc.url ? (
           <a
@@ -154,22 +155,37 @@ export const BotBubble = memo(function BotBubble({ msg, streaming }: BotBubblePr
   // (method "partial"): their chips appear right away, the % comes at the end.
   const partial = msg.grounding?.method === "partial";
   const reviewing = (Boolean(msg.reviewing) && !msg.grounding) || (partial && Boolean(streaming));
-  // Chips appear line by line while the answer is written (from `sources_map`),
-  // are confirmed or flagged by the evidence check, and are grouped by source.
+  // Chips appear while the answer is written (from `sources_map`), are confirmed
+  // or flagged by the evidence check, and are grouped per block by source.
   const checked = !!msg.grounding && msg.grounding.method !== "none";
   const answerComplete = !streaming || Boolean(msg.reviewing) || !!msg.grounding;
-  const chipGroups = useMemo(
-    () => isClarification ? new Map<number, ChipGroup>() : buildChipGroups(msg.answer, {
+  const layout: ChipLayout = useMemo(
+    () => isClarification ? { anchors: new Map(), warnings: new Map() } : buildChipLayout(msg.answer, {
       claims: checked ? (msg.grounding!.claims as Claim[]) : undefined,
       sources: msg.sources_map ?? null,
       complete: answerComplete,
     }),
     [isClarification, msg.answer, msg.grounding, checked, msg.sources_map, answerComplete],
   );
-  const chipsFor = (node: HastNode | undefined, endLine?: number, block?: boolean) => {
+  const EMPTY: ChipGroup = { docs: [], supported: [], kb: [], unsupported: [], lineCount: 0 };
+  // "Not in sources" on exactly the lines it concerns.
+  const warningsFor = (node: HastNode | undefined, endLine?: number) => {
     if (!node?.position) return null;
-    const group = groupsInRange(chipGroups, node.position.start.line, endLine ?? node.position.end.line);
-    return group ? <InlineSources group={group} block={block} /> : null;
+    const w = warningsInRange(layout, node.position.start.line, endLine ?? node.position.end.line);
+    return w.length ? <InlineSources group={{ ...EMPTY, unsupported: w }} /> : null;
+  };
+  // Source chips of a block that ends here (paragraph: inline; list/table/diagram: row below).
+  const blockChips = (node: HastNode | undefined, kinds: string[], block: boolean) => {
+    if (!node?.position) return null;
+    const { start, end } = { start: node.position.start.line, end: node.position.end.line };
+    for (let n = end; n >= start; n--) {
+      const anchor = layout.anchors.get(n);
+      // A list/table/diagram must be the outer block itself (not a nested list inside it).
+      if (anchor && kinds.includes(anchor.kind) && (!block || anchor.start === start)) {
+        return <InlineSources group={anchor.group} block={block} />;
+      }
+    }
+    return null;
   };
 
   // Render ```mermaid fenced blocks as downloadable pictures; all other
@@ -182,11 +198,20 @@ export const BotBubble = memo(function BotBubble({ msg, streaming }: BotBubblePr
       const cls =
         child && child.type === "element" ? child.properties?.className : undefined;
       const isMermaid = Array.isArray(cls) && cls.includes("language-mermaid");
-      if (isMermaid) return <>{children}{chipsFor(node as HastNode, undefined, true)}</>;
+      if (isMermaid) return <>{children}{blockChips(node as HastNode, ["code"], true)}</>;
       return <pre>{children}</pre>;
     },
     p({ node, children }) {
-      return <p>{children}{chipsFor(node as HastNode)}</p>;
+      return <p>{children}{warningsFor(node as HastNode)}{blockChips(node as HastNode, ["paragraph"], false)}</p>;
+    },
+    ul({ node, children }) {
+      return <><ul>{children}</ul>{blockChips(node as HastNode, ["list"], true)}</>;
+    },
+    ol({ node, children, start }) {
+      return <><ol start={start}>{children}</ol>{blockChips(node as HastNode, ["list"], true)}</>;
+    },
+    table({ node, children }) {
+      return <><table>{children}</table>{blockChips(node as HastNode, ["table"], true)}</>;
     },
     li({ node, children, className }) {
       const n = node as HastNode;
@@ -196,7 +221,7 @@ export const BotBubble = memo(function BotBubble({ msg, streaming }: BotBubblePr
       // Only this item's own lines, not its nested sub-list; chips go before the sub-list.
       const nested = kids.find((k) => k.tagName === "ul" || k.tagName === "ol");
       const end = nested?.position ? nested.position.start.line - 1 : undefined;
-      const chips = chipsFor(n, end);
+      const chips = warningsFor(n, end);
       if (!chips) return <li className={className}>{children}</li>;
       const items = Children.toArray(children);
       const at = items.findIndex((c) => isValidElement(c) && (c.type === "ul" || c.type === "ol"));
@@ -204,7 +229,7 @@ export const BotBubble = memo(function BotBubble({ msg, streaming }: BotBubblePr
       return <li className={className}>{items.slice(0, at)}{chips}{items.slice(at)}</li>;
     },
     tr({ node, children }) {
-      const chips = chipsFor(node as HastNode);
+      const chips = warningsFor(node as HastNode);
       if (!chips) return <tr>{children}</tr>;
       const cells = Children.toArray(children).filter(isValidElement) as ReactElement<{ children?: ReactNode }>[];
       if (cells.length === 0) return <tr>{children}</tr>;

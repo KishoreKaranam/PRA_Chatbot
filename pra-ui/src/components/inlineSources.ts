@@ -122,8 +122,10 @@ export function groupSources(claims: Claim[]): InlineSourceGroup {
 //    names it mentions, as soon as it is written.
 // 2. Checked: once the evidence check has judged a line, its verdict replaces
 //    the instant guess (unsupported lines get "Not in sources" instead).
-// 3. Grouped: consecutive lines backed by the same documents share ONE chip,
-//    shown at the end of the group.
+// 3. Grouped per block: a paragraph gets one chip row at its end; a whole list,
+//    table or diagram gets one row below it with every document it uses (most
+//    used first). Consecutive blocks with the same documents share one row.
+//    "Not in sources" warnings stay on the exact line they concern.
 
 export type SourcesMap = Record<string, DocumentRef[]>;
 
@@ -174,20 +176,75 @@ export function docsForLine(line: string, sources: SourcesMap, names?: string[])
 
 interface LineInfo { docs: DocumentRef[]; supported: string[]; kb: string[]; unsupported: string[] }
 
-/** Chips per answer line (1-based), placed at the last line of each same-source group. */
-export function buildChipGroups(
+export type BlockKind = "paragraph" | "list" | "table" | "code" | "heading";
+
+export interface Block { kind: BlockKind; start: number; end: number }
+
+/** Split markdown into top-level blocks (1-based line ranges). */
+export function splitBlocks(lines: string[]): Block[] {
+  const blocks: Block[] = [];
+  const isItem = (l: string) => /^\s*(?:[-*+]|\d+[.)])\s+/.test(l);
+  let i = 0;
+  while (i < lines.length) {
+    const line = lines[i];
+    if (!line.trim()) { i++; continue; }
+    const start = i + 1;
+    if (/^\s*```/.test(line)) {                                   // fenced code / diagram
+      i++;
+      while (i < lines.length && !/^\s*```/.test(lines[i])) i++;
+      blocks.push({ kind: "code", start, end: Math.min(i + 1, lines.length) });
+      i++;
+      continue;
+    }
+    if (/^\s*#{1,6}\s/.test(line)) { blocks.push({ kind: "heading", start, end: start }); i++; continue; }
+    if (/^\s*\|/.test(line)) {                                    // table
+      while (i < lines.length && /^\s*\|/.test(lines[i])) i++;
+      blocks.push({ kind: "table", start, end: i });
+      continue;
+    }
+    if (isItem(line)) {                                            // list, incl. nested items
+      let end = i;
+      while (i < lines.length) {
+        const l = lines[i];
+        if (l.trim() && (isItem(l) || /^\s{2,}\S/.test(l))) { end = i; i++; continue; }
+        if (!l.trim()) {                                          // a blank line inside a loose list
+          let j = i + 1;
+          while (j < lines.length && !lines[j].trim()) j++;
+          if (j < lines.length && isItem(lines[j])) { i = j; continue; }
+        }
+        break;
+      }
+      blocks.push({ kind: "list", start, end: end + 1 });
+      continue;
+    }
+    while (i < lines.length && lines[i].trim() && !isItem(lines[i]) && !/^\s*(```|\||#{1,6}\s)/.test(lines[i])) i++;
+    blocks.push({ kind: "paragraph", start, end: i });
+  }
+  return blocks;
+}
+
+export interface ChipAnchor { start: number; kind: BlockKind; group: ChipGroup }
+
+export interface ChipLayout {
+  anchors: Map<number, ChipAnchor>;   // block end line -> chips for that block (or merged blocks)
+  warnings: Map<number, string[]>;    // line -> "Not in sources" claims
+}
+
+/** Chips per block, grouped by source; warnings per line. */
+export function buildChipLayout(
   answer: string,
   opts: { claims?: Claim[]; sources?: SourcesMap | null; complete: boolean },
-): Map<number, ChipGroup> {
-  const lines = answer.split("\n");
-  const lastLine = opts.complete ? lines.length : lines.length - 1;   // the line being written is skipped
+): ChipLayout {
+  const all = answer.split("\n");
+  const lines = opts.complete ? all : all.slice(0, -1);       // the line being written is skipped
   const byLine = opts.claims ? claimsByLine(answer, opts.claims) : new Map<number, Claim[]>();
   const names = opts.sources ? Object.keys(opts.sources).sort((a, b) => b.length - a.length) : [];
 
   const info = new Map<number, LineInfo>();
-  for (let n = 1; n <= lastLine; n++) {
-    const raw = lines[n - 1];
-    if (!raw.trim() || /^\s*```/.test(raw) || /^\s*\|?\s*:?-{3,}/.test(raw)) continue;
+  const warnings = new Map<number, string[]>();
+  lines.forEach((raw, idx) => {
+    const n = idx + 1;
+    if (!raw.trim() || /^\s*```/.test(raw) || /^\s*\|?\s*:?-{3,}/.test(raw)) return;
     const checked = byLine.get(n);
     if (checked && checked.length) {
       const docs = new Map<string, DocumentRef>();
@@ -200,64 +257,66 @@ export function buildChipGroups(
         } else entry.kb.push(c.claim);
       }
       entry.docs = [...docs.values()];
+      if (entry.unsupported.length) warnings.set(n, entry.unsupported);
       info.set(n, entry);
     } else if (opts.sources) {
       const docs = docsForLine(raw, opts.sources, names);
       if (docs.length) info.set(n, { docs, supported: [plainLine(raw)], kb: [], unsupported: [] });
     }
-  }
+  });
 
-  const keyOf = (e?: LineInfo) =>
-    !e ? "" : e.docs.length ? e.docs.map((d) => d.name).sort().join("|") : e.kb.length ? "__kb" : "";
-
-  const out = new Map<number, ChipGroup>();
-  const add = (line: number, part: Partial<ChipGroup>) => {
-    const g = out.get(line) ?? { docs: [], supported: [], kb: [], unsupported: [], lineCount: 0 };
-    if (part.docs) g.docs = part.docs;
-    g.supported.push(...(part.supported ?? []));
-    g.kb.push(...(part.kb ?? []));
-    g.unsupported.push(...(part.unsupported ?? []));
-    g.lineCount += part.lineCount ?? 0;
-    out.set(line, g);
+  // One group per block: every document used in it, most used first.
+  const blockGroup = (b: Block): ChipGroup | null => {
+    const counts = new Map<string, { doc: DocumentRef; n: number }>();
+    const g: ChipGroup = { docs: [], supported: [], kb: [], unsupported: [], lineCount: 0 };
+    for (let n = b.start; n <= b.end; n++) {
+      const e = info.get(n);
+      if (!e) continue;
+      if (e.docs.length || e.kb.length) g.lineCount += 1;
+      e.docs.forEach((d) => {
+        const c = counts.get(d.name) ?? { doc: d, n: 0 };
+        c.n += 1;
+        counts.set(d.name, c);
+      });
+      g.supported.push(...e.supported);
+      g.kb.push(...e.kb);
+    }
+    g.docs = [...counts.values()].sort((a, b2) => b2.n - a.n).map((c) => c.doc);
+    return g.docs.length || g.kb.length ? g : null;
   };
+  const keyOf = (g: ChipGroup | null) =>
+    !g ? "" : g.docs.length ? g.docs.map((d) => d.name).sort().join("|") : "__kb";
 
-  let run: { key: string; end: number; docs: DocumentRef[]; supported: string[]; kb: string[]; count: number } | null = null;
-  const closeRun = () => {
-    if (run) add(run.end, { docs: run.docs, supported: run.supported, kb: run.kb, lineCount: run.count });
-    run = null;
+  const anchors = new Map<number, ChipAnchor>();
+  let pending: { key: string; block: Block; group: ChipGroup } | null = null;
+  const flush = () => {
+    if (pending) anchors.set(pending.block.end, { start: pending.block.start, kind: pending.block.kind, group: pending.group });
+    pending = null;
   };
-  for (let n = 1; n <= lastLine; n++) {
-    if (!lines[n - 1].trim()) continue;                // blank lines do not break a group
-    const e = info.get(n);
-    const key = keyOf(e);
-    if (e && e.unsupported.length) add(n, { unsupported: e.unsupported });
-    if (!key) { closeRun(); continue; }
-    if (run && (run as { key: string }).key === key) {
-      const r = run as NonNullable<typeof run>;
-      r.end = n; r.count += 1; r.supported.push(...e!.supported); r.kb.push(...e!.kb);
+  for (const b of splitBlocks(lines)) {
+    if (b.kind === "heading") { flush(); continue; }
+    const g = blockGroup(b);
+    const key = keyOf(g);
+    if (!g) { flush(); continue; }
+    const p = pending as { key: string; block: Block; group: ChipGroup } | null;
+    if (p && p.key === key) {                                    // same documents: share one row
+      p.group.supported.push(...g.supported);
+      p.group.kb.push(...g.kb);
+      p.group.lineCount += g.lineCount;
+      p.block = b;
     } else {
-      closeRun();
-      run = { key, end: n, docs: e!.docs, supported: [...e!.supported], kb: [...e!.kb], count: 1 };
+      flush();
+      pending = { key, block: b, group: g };
     }
   }
-  closeRun();
-  return out;
+  flush();
+  return { anchors, warnings };
 }
 
-/** All chip groups on lines start..end, merged into one. */
-export function groupsInRange(groups: Map<number, ChipGroup>, start?: number, end?: number): ChipGroup | null {
-  if (!start || !end) return null;
-  let merged: ChipGroup | null = null;
-  for (let n = start; n <= end; n++) {
-    const g = groups.get(n);
-    if (!g) continue;
-    if (!merged) merged = { docs: [...g.docs], supported: [...g.supported], kb: [...g.kb], unsupported: [...g.unsupported], lineCount: g.lineCount };
-    else {
-      const seen = new Set(merged.docs.map((d) => d.name));
-      g.docs.forEach((d) => { if (!seen.has(d.name)) merged!.docs.push(d); });
-      merged.supported.push(...g.supported); merged.kb.push(...g.kb);
-      merged.unsupported.push(...g.unsupported); merged.lineCount += g.lineCount;
-    }
-  }
-  return merged;
+/** Warnings on lines start..end. */
+export function warningsInRange(layout: ChipLayout, start?: number, end?: number): string[] {
+  if (!start || !end) return [];
+  const out: string[] = [];
+  for (let n = start; n <= end; n++) out.push(...(layout.warnings.get(n) ?? []));
+  return out;
 }
