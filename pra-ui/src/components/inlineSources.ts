@@ -124,7 +124,8 @@ export function groupSources(claims: Claim[]): InlineSourceGroup {
 //    the instant guess (unsupported lines get "Not in sources" instead).
 // 3. Grouped per block: a paragraph gets one chip row at its end; a whole list,
 //    table or diagram gets one row below it with every document it uses (most
-//    used first). Consecutive blocks with the same documents share one row.
+//    used first). An intro sentence and the list right after it share one row
+//    when they use the same documents.
 //    "Not in sources" warnings stay on the exact line they concern.
 
 export type SourcesMap = Record<string, DocumentRef[]>;
@@ -299,7 +300,11 @@ export function buildChipLayout(
     const key = keyOf(g);
     if (!g) { flush(); continue; }
     const p = pending as { key: string; block: Block; group: ChipGroup } | null;
-    if (p && p.key === key) {                                    // same documents: share one row
+    // Share one row only for "intro sentence + the list/table/diagram right after
+    // it" with the same documents. A list never merges with the text after it,
+    // so its Sources row always sits directly below the list.
+    const introThenBlock = !!p && p.block.kind === "paragraph" && b.kind !== "paragraph";
+    if (p && p.key === key && introThenBlock) {
       p.group.supported.push(...g.supported);
       p.group.kb.push(...g.kb);
       p.group.lineCount += g.lineCount;
