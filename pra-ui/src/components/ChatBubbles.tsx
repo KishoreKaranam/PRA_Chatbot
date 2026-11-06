@@ -1,11 +1,10 @@
 ﻿import { Children, cloneElement, isValidElement, memo, useMemo, useState } from "react";
 import type { ReactElement, ReactNode } from "react";
-import { Copy, Check, HelpCircle, RotateCcw, ShieldCheck, FileText, AlertTriangle } from "lucide-react";
+import { Copy, Check, HelpCircle, RotateCcw, FileText, AlertTriangle } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import type { Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import type { ChatResponse } from "../api";
-import type { GroundingReport } from "../api";
 import { MermaidDiagram } from "./MermaidDiagram";
 import { buildChipLayout, shortDocName, warningsInRange } from "./inlineSources";
 import type { ChipGroup, ChipLayout, Claim } from "./inlineSources";
@@ -33,39 +32,6 @@ function IntentBadge({ intent }: { intent: string }) {
   );
 }
 
-// ── Grounding / output review badge ─────────────────────────────────────────
-
-const GROUNDING_CONFIG: Record<string, { label: string; color: string }> = {
-  high:       { label: "Well grounded",   color: "#16a34a" },
-  moderate:   { label: "Partly grounded", color: "#d97706" },
-  low:        { label: "Weakly grounded", color: "#dc2626" },
-  unverified: { label: "Unverified",      color: "#6b7280" },
-};
-
-// Overall summary only; the per-claim sources are shown inline next to the answer.
-function GroundingBadge({ report }: { report: GroundingReport }) {
-  const cfg = GROUNDING_CONFIG[report.verdict] ?? GROUNDING_CONFIG.unverified;
-  const pct = Math.round(report.grounded_percentage);
-  const detail = `${report.supported_claims} of ${report.total_claims} claims supported` +
-    (report.method === "lexical" ? " (estimated)" : "");
-
-  return (
-    <div className="grounding">
-      <span
-        className="grounding__badge grounding__badge--static"
-        title={report.summary ? `${report.summary}\n\n${detail}` : detail}
-        style={{ ["--grounding-color" as string]: cfg.color }}
-      >
-        <ShieldCheck size={12} />
-        <span className="grounding__pct">{pct}% evidence-based</span>
-        <span className="grounding__verdict">· {cfg.label}</span>
-        <span className="grounding__track">
-          <span className="grounding__fill" style={{ width: `${pct}%`, background: cfg.color }} />
-        </span>
-      </span>
-    </div>
-  );
-}
 
 // ── Inline source chips (next to each paragraph / bullet / table row) ─────────
 
@@ -298,18 +264,7 @@ export const BotBubble = memo(function BotBubble({ msg, streaming }: BotBubblePr
           )}
         </div>
 
-        {/* ── Output review: % grounded in evidence ───────────────────────── */}
-        {!isClarification && reviewing && (
-          <div className="grounding">
-            <span className="grounding__checking">
-              <span className="grounding__spinner" aria-hidden="true" /> Checking sources…
-              {partial && msg.grounding && ` ${msg.grounding.total_claims} lines checked`}
-            </span>
-          </div>
-        )}
-        {!isClarification && msg.grounding && msg.grounding.method !== "none" && !partial && (
-          <GroundingBadge report={msg.grounding} />
-        )}
+        
       </div>
     </div>
   );
