@@ -1,32 +1,21 @@
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
-import { Download, AlertTriangle, ZoomIn, ZoomOut, Maximize2, Minimize2, Scan } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
+import { Download, AlertTriangle, ZoomIn, ZoomOut, RotateCcw } from "lucide-react";
 import mermaid from "mermaid";
 
 mermaid.initialize({
   startOnLoad: false,
-  // "base" theme + our own palette: soft indigo stages, light grey groups,
-  // slate lines — matches the app instead of Mermaid's yellow/purple default.
-  theme: "base",
+  theme: "default",
   securityLevel: "loose", // allow <br/> labels in node text
   fontFamily: "inherit",
   themeVariables: {
-    fontSize: "13px",
-    primaryColor: "#eef2ff",
-    primaryBorderColor: "#6366f1",
-    primaryTextColor: "#1e293b",
-    secondaryColor: "#f0fdfa",
-    tertiaryColor: "#f8fafc",
-    lineColor: "#64748b",
-    clusterBkg: "#f8fafc",
-    clusterBorder: "#cbd5e1",
-    edgeLabelBackground: "#ffffff",
+    fontSize: "12px",
   },
   flowchart: {
-    useMaxWidth: false,  // render at natural size; the viewer fits it to the width
+    useMaxWidth: false,  // render at natural size so labels stay readable; container scrolls
     htmlLabels: true,
-    nodeSpacing: 30,
-    rankSpacing: 45,
-    padding: 10,
+    nodeSpacing: 25,     // tighter horizontal gaps
+    rankSpacing: 35,     // tighter vertical gaps → less scrolling
+    padding: 6,
     curve: "basis",
   },
   sequence: {
@@ -80,8 +69,6 @@ export function MermaidDiagram({ code, streaming }: MermaidDiagramProps) {
   const [svg, setSvg] = useState<string>("");
   const [error, setError] = useState<string>("");
   const [zoom, setZoom] = useState<number>(1);
-  const [fullscreen, setFullscreen] = useState<boolean>(false);
-  const canvasRef = useRef<HTMLDivElement>(null);
   const svgRef = useRef<string>("");
   const scrollRef = useRef<HTMLDivElement>(null);
 
@@ -90,19 +77,7 @@ export function MermaidDiagram({ code, streaming }: MermaidDiagramProps) {
   const clampZoom = (z: number) => Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, z));
   const zoomIn = () => setZoom((z) => clampZoom(Math.round((z + 0.2) * 100) / 100));
   const zoomOut = () => setZoom((z) => clampZoom(Math.round((z - 0.2) * 100) / 100));
-  // Zoom that makes the whole diagram fit the visible width (never enlarges
-  // past 100%, never shrinks below the readable minimum).
-  const fitToWidth = useCallback(() => {
-    const viewport = scrollRef.current;
-    const svgEl = canvasRef.current?.querySelector("svg");
-    if (!viewport || !svgEl) return;
-    const natural = svgEl.viewBox?.baseVal?.width || svgEl.getBoundingClientRect().width / (zoom || 1);
-    if (!natural) return;
-    const available = viewport.clientWidth - 24;
-    setZoom(clampZoom(Math.min(1, Math.floor((available / natural) * 100) / 100)));
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [zoom]);
-  const zoomReset = fitToWidth;
+  const zoomReset = () => setZoom(1);
 
   // Ctrl/Cmd + wheel to zoom; plain wheel keeps native scrolling.
   const onWheel = (e: React.WheelEvent<HTMLDivElement>) => {
@@ -174,19 +149,6 @@ export function MermaidDiagram({ code, streaming }: MermaidDiagramProps) {
     };
   }, [code, streaming]);
 
-  useLayoutEffect(() => {
-    if (svg) fitToWidth();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [svg, fullscreen]);
-
-  // Esc leaves full screen.
-  useEffect(() => {
-    if (!fullscreen) return;
-    const onKey = (e: KeyboardEvent) => e.key === "Escape" && setFullscreen(false);
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [fullscreen]);
-
   const downloadSvg = () => {
     const blob = new Blob([svgRef.current], { type: "image/svg+xml;charset=utf-8" });
     triggerDownload(URL.createObjectURL(blob), "diagram.svg");
@@ -219,13 +181,13 @@ export function MermaidDiagram({ code, streaming }: MermaidDiagramProps) {
   // Rendered diagram — the primary, expected output.
   if (svg) {
     return (
-      <div className={`mermaid-block${fullscreen ? " mermaid-block--fullscreen" : ""}`}>
+      <div className="mermaid-block">
         <div className="mermaid-toolbar">
           <button className="mermaid-download-btn" onClick={zoomOut} title="Zoom out">
             <ZoomOut size={12} />
           </button>
-          <button className="mermaid-download-btn" onClick={zoomReset} title="Fit to width">
-            <Scan size={12} /> {Math.round(zoom * 100)}%
+          <button className="mermaid-download-btn" onClick={zoomReset} title="Reset zoom">
+            <RotateCcw size={12} /> {Math.round(zoom * 100)}%
           </button>
           <button className="mermaid-download-btn" onClick={zoomIn} title="Zoom in">
             <ZoomIn size={12} />
@@ -235,14 +197,6 @@ export function MermaidDiagram({ code, streaming }: MermaidDiagramProps) {
           </button>
           <button className="mermaid-download-btn" onClick={downloadSvg} title="Download as SVG">
             <Download size={12} /> SVG
-          </button>
-          <button
-            className="mermaid-download-btn"
-            onClick={() => setFullscreen((f) => !f)}
-            title={fullscreen ? "Exit full screen (Esc)" : "Full screen"}
-          >
-            {fullscreen ? <Minimize2 size={12} /> : <Maximize2 size={12} />}
-            {fullscreen ? " Close" : " Full screen"}
           </button>
         </div>
         <div
@@ -254,7 +208,6 @@ export function MermaidDiagram({ code, streaming }: MermaidDiagramProps) {
         >
           <div
             className="mermaid-canvas"
-            ref={canvasRef}
             style={{ zoom }}
             dangerouslySetInnerHTML={{ __html: svg }}
           />
