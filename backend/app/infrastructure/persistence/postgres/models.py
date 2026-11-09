@@ -22,7 +22,7 @@ from sqlalchemy import (
     String,
     Text,
 )
-from sqlalchemy.dialects.postgresql import ARRAY, UUID
+from sqlalchemy.dialects.postgresql import ARRAY, JSONB, UUID
 
 from app.infrastructure.persistence.postgres.database import Base
 
@@ -86,6 +86,7 @@ class ConversationTurn(Base):
     entities           = Column(ARRAY(Text), nullable=True)    # PRA entities mentioned e.g. ["ISO 20022", "SCT"]
     confidence         = Column(Float,       nullable=True)    # 0.0 – 1.0 evidence confidence
     modes_used         = Column(ARRAY(Text), nullable=True)    # e.g. ["sparql", "fts", "similarity"]
+    grounding          = Column(JSONB,       nullable=True)    # evidence check shown under the answer (assistant turns)
     timestamp          = Column(DateTime,    default=datetime.utcnow, nullable=False, index=True)
 
     def __repr__(self) -> str:

@@ -20,6 +20,7 @@ Non-streaming endpoint (/chat):
 """
 from __future__ import annotations
 
+import asyncio
 import json
 from typing import Any, AsyncGenerator
 
@@ -33,6 +34,7 @@ from app.orchestration.langgraph.nodes import _get_answer_service, _get_orchestr
 from app.orchestration.langgraph.state import PRAState, make_initial_state
 from app.models.schemas import AgentInstructions, ChatRequest, ChatResponse, ConversationTurn, Neo4jGraphEvidence
 from app.infrastructure.configuration.config_service import get_config_service
+from app.application.grounding.sources import attach_sources, prefetch_sources, sources_payload
 from app.core.log_config import get_logger
 
 router = APIRouter()
@@ -261,6 +263,11 @@ async def chat_stream(
         is_followup   = accumulated.get("is_followup", False)
         full_answer   = ""
 
+        # The source-document lookup only needs the evidence, so start it now
+        # and let it run while the answer streams (saves a few seconds later).
+        sources_task = asyncio.create_task(prefetch_sources(validated_ev))
+        sources_sent = False
+
         try:
             async for token in answer_svc.generate_stream(
                 rewritten_q, validated_ev, modes_used, instructions,
@@ -268,23 +275,55 @@ async def chat_stream(
             ):
                 full_answer += token
                 yield _sse("token", {"text": token})
+                # As soon as the document lookup is done, send it: the UI then
+                # shows source chips on each line as it is written.
+                if not sources_sent and sources_task.done():
+                    sources_sent = True
+                    payload = sources_payload(sources_task.result())
+                    if payload:
+                        yield _sse("sources", {"names": payload})
         except Exception as exc:
             logger.error("answer_stream_failed", error=str(exc))
+            sources_task.cancel()
             yield _sse("error", {"detail": str(exc)})
             return
 
         confidence = answer_svc._estimate_confidence(validated_ev, modes_used)
+
+        if not sources_sent:          # very short answer: lookup finished after the last token
+            payload = sources_payload(await sources_task)
+            if payload:
+                yield _sse("sources", {"names": payload})
+
+        # Tell the UI the answer is complete and the evidence check has started,
+        # so it can show "Checking sources…" instead of a frozen cursor.
+        yield _sse("reviewing", {})
 
         # ── Output validation / grounding review layer ────────────────────────
         # Reviews the completed answer against the retrieved evidence and reports
         # what % of it is grounded in the documents. Non-fatal on failure.
         grounding_report = None
         try:
-            grounding_report = await answer_svc.review_grounding(
+            async for kind, report in answer_svc.review_grounding_stream(
                 full_answer, validated_ev, modes_used, instructions,
-            )
+            ):
+                # Usually finished long ago (it ran while the answer streamed).
+                sources_by_name = await sources_task
+                report = await attach_sources(
+                    report, validated_ev, sources_by_name=sources_by_name,
+                    quiet=(kind == "partial"),
+                )
+                if kind == "partial":
+                    # Lines checked so far → the UI adds their source links now.
+                    yield _sse("grounding", report.model_dump())
+                else:
+                    grounding_report = report
         except Exception as exc:
             logger.warning("stream_grounding_review_failed", error=str(exc))
+
+        # Send the evidence check to the UI first; saving can happen after.
+        if grounding_report is not None:
+            yield _sse("grounding", grounding_report.model_dump())
 
         # ── Persist the turn (mirrors node_save_to_db, run manually since we
         # bypassed the graph's generate_answer → save_to_db tail) ─────────────
@@ -295,9 +334,6 @@ async def chat_stream(
             await node_save_to_db(accumulated, {"configurable": {"db": db}})
         except Exception as exc:
             logger.warning("stream_save_to_db_failed", error=str(exc))
-
-        if grounding_report is not None:
-            yield _sse("grounding", grounding_report.model_dump())
 
         yield _sse("done", {
             "confidence": confidence,

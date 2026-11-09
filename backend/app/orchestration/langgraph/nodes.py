@@ -34,7 +34,7 @@ import re
 from typing import Any
 
 import anthropic
-import httpx  # anthropic SDK expects an httpx.AsyncClient for custom http_client
+import httpx2 as httpx
 from langchain_core.runnables import RunnableConfig
 from app.core.log_config import get_logger
 from app.core.settings import get_settings
@@ -52,6 +52,7 @@ from app.models.schemas import (
 from app.infrastructure.llm.answer_service import AnswerGenerationService
 from app.infrastructure.configuration.config_service import get_config_service
 from app.application.retrieval.orchestrator import RetrievalOrchestrator
+from app.application.grounding.sources import attach_sources
 from app.prompts.conversation import (
     build_insufficient_evidence_message,
     build_node_clarification_message,
@@ -68,9 +69,11 @@ _haiku_client: anthropic.AsyncAnthropic | None = None
 _haiku_client_azure: Any | None = None
 
 MAX_HISTORY_TURNS = 6       # sliding window — 3 user+assistant pairs
+# Words that may point back to something said earlier. "which" is not here:
+# it starts a question ("which journey stages...") and must never be replaced.
 PRONOUN_RE = re.compile(
     r"\b(it|its|they|them|their|those|that|this|these|he|she|"
-    r"which|the function|the domain|the rule|the scheme|the activity)\b",
+    r"the function|the domain|the rule|the scheme|the activity)\b",
     re.IGNORECASE,
 )
 
@@ -295,6 +298,23 @@ async def node_load_history(state: PRAState, config: RunnableConfig) -> dict:
 # Node 2 — node_resolve_context
 # ════════════════════════════════════════════════════════════════════════════════
 
+def _pronoun_follows_entity(question: str, entity_labels: list[str]) -> bool:
+    """True when the question names a PRA entity before its first pronoun.
+
+    "What does FX Management do and which stages does it support?" -> "it" is FX
+    Management, so the question is self-contained and must not be rewritten.
+    "Compare it with FX Management" -> "it" comes first, so it may refer back.
+    """
+    pronoun = PRONOUN_RE.search(question)
+    if not pronoun or not entity_labels:
+        return False
+    lowered = question.lower()
+    positions = [lowered.find(label.lower()) for label in entity_labels]
+    known = [p for p in positions if p >= 0]
+    first_entity = min(known) if known else 0     # matched via an alias: assume it comes first
+    return first_entity < pronoun.start()
+
+
 async def node_resolve_context(state: PRAState, config: RunnableConfig) -> dict:
     """
     3-layer context resolution — cheapest layer tried first.
@@ -347,15 +367,19 @@ async def node_resolve_context(state: PRAState, config: RunnableConfig) -> dict:
 
     # ── Layer B: Entity cache substitution ────────────────────────────────────
     entity_confidence = 0.0
+    refers_to_own_subject = False
 
     if db is not None:
         try:
             # Find entities in the raw question
             matches = await find_entities(db, raw, top_k=5)
             entities_mentioned = [m["label"] for m in matches]
+            refers_to_own_subject = _pronoun_follows_entity(raw, entities_mentioned)
 
-            # If pronoun found and we have history, try resolving from history entities
-            if has_pronoun and history:
+            # If pronoun found and we have history, try resolving from history entities.
+            # Not when the question names its own entity: in "What does FX Management
+            # do and which stages does it support?", "it" means FX Management.
+            if has_pronoun and history and not refers_to_own_subject:
                 last_user_text = next(
                     (t.content for t in reversed(history) if t.role == "user"), ""
                 )
@@ -380,7 +404,7 @@ async def node_resolve_context(state: PRAState, config: RunnableConfig) -> dict:
             logger.warning("node_resolve_context_layer_b_failed", error=str(exc))
 
     # ── Layer C: Claude Haiku (only if still ambiguous) ───────────────────────
-    if has_pronoun and entity_confidence < 0.8 and history:
+    if has_pronoun and entity_confidence < 0.8 and history and not refers_to_own_subject:
         try:
             haiku, haiku_model, haiku_provider = _get_haiku_client()
             history_text = _format_history(history)
@@ -729,6 +753,7 @@ async def node_validate_output(state: PRAState) -> dict:
             retrieval_modes,
             instructions,
         )
+        report = await attach_sources(report, validated_evidence)
         logger.info(
             "node_validate_output_ok",
             score=report.grounding_score,
@@ -744,6 +769,15 @@ async def node_validate_output(state: PRAState) -> dict:
 # ════════════════════════════════════════════════════════════════════════════════
 # Node 9 — node_save_to_db
 # ════════════════════════════════════════════════════════════════════════════════
+
+def _grounding_dict(report: Any) -> dict | None:
+    """GroundingReport (or dict) → JSON-safe dict for storage, else None."""
+    if report is None:
+        return None
+    if hasattr(report, "model_dump"):
+        return report.model_dump(mode="json")
+    return report if isinstance(report, dict) else None
+
 
 async def node_save_to_db(state: PRAState, config: RunnableConfig) -> dict:
     """
@@ -825,6 +859,7 @@ async def node_save_to_db(state: PRAState, config: RunnableConfig) -> dict:
             answer,
             confidence=confidence,
             modes_used=retrieval_modes,
+            grounding=_grounding_dict(state.get("grounding_report")),
         )
         logger.info("node_save_to_db_assistant_turn_ok", session_id=session_id)
     except Exception as exc:

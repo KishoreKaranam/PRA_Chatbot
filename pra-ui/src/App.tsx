@@ -189,9 +189,22 @@ export default function App() {
               streamRef.current.answer += text;
               snapshot();
             },
+            // Documents behind each PRA name: chips appear while the answer streams
+            onSources: (names) => {
+              if (!streamRef.current) return;
+              streamRef.current.sources_map = names;
+              snapshot();
+            },
+            // Answer finished; the evidence check is running
+            onReviewing: () => {
+              if (!streamRef.current) return;
+              streamRef.current.reviewing = true;
+              snapshot();
+            },
             // Output review layer — % of answer grounded in evidence
             onGrounding: (report) => {
               if (!streamRef.current) return;
+              streamRef.current.reviewing = false;
               streamRef.current.grounding = report;
               snapshot();
             },
@@ -199,6 +212,7 @@ export default function App() {
             onDone: (data) => {
               if (!streamRef.current) return;
               streamRef.current.confidence = data.confidence;
+              streamRef.current.reviewing = false;
               snapshot();
               setHistoryVersion((v) => v + 1);
             },
@@ -259,7 +273,7 @@ export default function App() {
       const turns = await loadSessionHistory(id);
       const loaded: Message[] = turns.map((t) => {
         if (t.role === "user") {
-          return { role: "user", content: t.rewritten_content || t.raw_content, timestamp: new Date(t.timestamp ?? Date.now()) };
+          return { role: "user", content: t.raw_content, timestamp: new Date(t.timestamp ?? Date.now()) };
         }
         const response: ChatResponse = {
           question: "",
@@ -272,6 +286,7 @@ export default function App() {
           confidence: t.confidence,
           warning: null,
           clarification_needed: null,
+          grounding: t.grounding ?? null,   // source chips + % badge, as when first answered
         };
         return { role: "assistant", response, timestamp: new Date(t.timestamp ?? Date.now()) };
       });

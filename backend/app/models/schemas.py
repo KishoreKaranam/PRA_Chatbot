@@ -126,9 +126,20 @@ class Neo4jGraphEvidence(BaseModel):
     results: list[Neo4jNode] = Field(default_factory=list)
     relationships: list[Neo4jRelationship] = Field(default_factory=list)
     result_count: int = 0
+    # Ready-to-read text for PRA map / domain profile lookups (empty otherwise).
+    summary: str = ""
 
 
 # ── Grounding / output review ─────────────────────────────────────────────────
+
+class DocumentRef(BaseModel):
+    """A source document behind a piece of evidence (the graph's `source` field)."""
+    name: str = Field(..., description="Original document name as stored in the graph")
+    url: str | None = Field(
+        default=None,
+        description="Link to open the PDF copy, or None if no PDF is available",
+    )
+
 
 class GroundingClaim(BaseModel):
     """A single atomic claim extracted from the generated answer and its verdict."""
@@ -139,6 +150,15 @@ class GroundingClaim(BaseModel):
         description="Labels/URIs of the evidence items supporting this claim",
     )
     note: str = Field(default="", description="Short rationale for the verdict")
+    answer_quote: str = Field(
+        default="",
+        description="Exact sentence/bullet of the answer this claim was taken from "
+                    "(used to place source links next to that part of the answer)",
+    )
+    sources: list[DocumentRef] = Field(
+        default_factory=list,
+        description="Documents the supporting evidence came from",
+    )
 
 
 class GroundingReport(BaseModel):
@@ -167,6 +187,10 @@ class GroundingReport(BaseModel):
     method: str = Field(
         default="none",
         description="How the score was derived: llm | lexical | none",
+    )
+    documents: list[DocumentRef] = Field(
+        default_factory=list,
+        description="All source documents referenced by the supported claims",
     )
 
 

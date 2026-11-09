@@ -65,6 +65,13 @@ class Settings(BaseSettings):
     backend_host: str = "0.0.0.0"
     backend_port: int = 8000
     log_level: str = "INFO"
+    # Save the exact text sent to Claude for each answer/review under
+    # backend/logs/llm_context/ (for debugging and before/after comparisons).
+    log_llm_context: bool = False
+
+    # Source documents (PDF copies of the files named in the graph's `source`
+    # field). Empty = backend/documents. Only files in this folder are served.
+    documents_dir: str = ""
 
     # Agent defaults
     default_retrieval_strategy: str = "hybrid"
@@ -73,6 +80,10 @@ class Settings(BaseSettings):
     default_show_evidence: bool = True
     default_strict_ontology_mode: bool = False
     default_confidence_threshold: float = 0.3
+
+    # Chat history: conversations are kept this many days after their last
+    # message, then deleted automatically (checked at startup and once a day).
+    chat_retention_days: int = 365
 
     # PostgreSQL
     database_url: str = "postgresql+asyncpg://postgres:postgres@localhost:5432/pra_chatbot"

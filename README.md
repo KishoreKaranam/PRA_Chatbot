@@ -280,8 +280,8 @@ is for Azure OpenAI and is separate from `azure_anthropic`.
 
 | Variable | Example | Description |
 |----------|---------|-------------|
-| `AZURE_OPENAI_API_KEY` | `7o7Nob...` | Azure API key |
-| `AZURE_OPENAI_ENDPOINT` | `https://weave.cognitiveservices.azure.com/` | Endpoint |
+| `AZURE_OPENAI_API_KEY` | `<your-azure-key>` | Azure API key |
+| `AZURE_OPENAI_ENDPOINT` | `https://<your-resource>.cognitiveservices.azure.com/` | Endpoint |
 | `AZURE_OPENAI_API_VERSION` | `2025-01-01-preview` | API version |
 | `AZURE_OPENAI_EMBEDDING_DEPLOYMENT` | `text-embedding-3-large` | Deployment name |
 | `EMBEDDING_ENABLED` | `true` | Enable vector search |
@@ -499,6 +499,33 @@ Neo4j in `backend/.env`:
 ```env
 VECTOR_BACKEND=neo4j
 ```
+
+---
+
+## Source Document Links
+
+Under each supported claim in the grounding panel ("X% evidence-based"), the UI
+shows the document that evidence came from, e.g.
+**PRA Functional descriptions for Payments Journey.xlsx**. The name comes from
+the graph's `source` property. Nodes without their own `source` (Purpose, Rule,
+PreCondition, PostCondition, ...) inherit it from the nodes they are directly
+connected to (their Function, Pattern, Domain).
+
+To make the names clickable, save each source document as PDF with the **same
+name** (only the extension changes) and put it in `backend/documents/`:
+
+```
+backend/documents/
+├── PRA Patterns guide.pdf
+├── PRA Functional descriptions for Supporting domains.pdf
+└── PRA Functional descriptions for Payments Journey.pdf
+```
+
+The backend serves them at `GET /api/documents/<file name>.pdf` and opens them
+in a new browser tab. Only files directly inside that folder can be served. Use
+`DOCUMENTS_DIR` in `backend/.env` to point at another folder. Documents without
+a PDF copy are shown as grey, non-clickable names. `backend/documents/` is in
+`.gitignore` so internal documents are never committed.
 
 ---
 

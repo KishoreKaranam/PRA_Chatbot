@@ -11,7 +11,7 @@ GraphDB FTS uses the Lucene connector:
 """
 from __future__ import annotations
 
-import httpx
+import httpx2 as httpx
 from tenacity import retry, stop_after_attempt, wait_exponential
 
 from app.infrastructure.knowledge_graph.base import GraphBackend

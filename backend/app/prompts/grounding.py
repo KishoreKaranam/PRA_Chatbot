@@ -20,27 +20,28 @@ Your job is to decide how much of the ANSWER is actually supported by the
 EVIDENCE — not whether the answer sounds correct in general.
 
 Rules:
-- Break the ANSWER into atomic, verifiable claims (one fact per claim).
-- Ignore pure formatting, headings, questions back to the user, generic
-  filler ("Let me explain...") and meta commentary — do not count these as claims.
-- A claim is "supported" ONLY if the EVIDENCE directly states or clearly implies it.
-- If a claim relies on outside/general knowledge not present in the EVIDENCE,
-  mark it "supported": false.
-- Be conservative: when in doubt, mark as not supported.
+- The ANSWER is shown with line numbers ("L7| ..."). Give ONE verdict per line
+  that states facts (sentences, bullets, table rows, diagram nodes and edges),
+  in answer order.
+- Skip lines without facts: headings, table header/separator rows, filler
+  ("Here is...") and diagram syntax lines (subgraph, end, direction, classDef).
+- "ok" ONLY if the EVIDENCE directly states or clearly implies everything the
+  line says. If any part relies on outside/general knowledge, it is "no".
+  Be conservative: when in doubt, "no".
 
-Respond with ONLY a JSON object (no markdown, no prose) in exactly this shape:
-{
-  "claims": [
-    {
-      "claim": "<atomic statement from the answer>",
-      "supported": true,
-      "evidence_refs": ["<label or uri of supporting evidence>"],
-      "note": "<short reason>"
-    }
-  ],
-  "summary": "<one or two sentence reviewer summary>"
-}
+Output format — plain text, nothing else (no JSON, no markdown, no reasoning):
+L3 ok
+L4 ok
+L5 no | <the unsupported part, at most 10 words>
+SUMMARY: <one short sentence>
 """
+
+
+def number_answer_lines(answer: str) -> str:
+    """Prefix each non-empty line with its 1-based line number ("L7| ...")."""
+    return "\n".join(
+        f"L{i}| {line}" for i, line in enumerate(answer.split("\n"), start=1) if line.strip()
+    )
 
 
 def build_grounding_user_message(answer: str, evidence_context: str) -> str:
@@ -49,7 +50,7 @@ def build_grounding_user_message(answer: str, evidence_context: str) -> str:
     return (
         "Review the following ANSWER against the EVIDENCE and return the JSON verdict.\n\n"
         "=== ANSWER ===\n"
-        f"{answer.strip()}\n\n"
+        f"{number_answer_lines(answer.strip())}\n\n"
         "=== EVIDENCE ===\n"
         f"{evidence_block}\n"
     )

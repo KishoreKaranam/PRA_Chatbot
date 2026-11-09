@@ -13,7 +13,7 @@ import re
 from math import isfinite
 from openai import AsyncOpenAI, AsyncAzureOpenAI
 import anthropic
-import httpx  # anthropic SDK expects an httpx.AsyncClient for custom http_client
+import httpx2 as httpx
 
 from app.models.schemas import (
     AgentInstructions,
@@ -41,6 +41,9 @@ logger = get_logger(__name__)
 
 class AnswerGenerationService:
     """Generate LLM answers grounded in retrieved evidence."""
+
+    # Upper limit of graph entities written into Claude's evidence text.
+    MAX_GRAPH_ENTITIES = 40
 
     def __init__(self) -> None:
         settings = get_settings()
@@ -248,20 +251,41 @@ class AnswerGenerationService:
     ) -> GroundingReport:
         """
         Validate a generated answer against the retrieved evidence and report
-        what fraction of it is grounded in that evidence.
+        what fraction of it is grounded in that evidence (final result only).
+        """
+        report = GroundingReport(summary="No answer to review.", method="none")
+        async for kind, current in self.review_grounding_stream(answer, evidence, modes_used, instructions):
+            if kind == "final":
+                report = current
+        return report
 
-        Uses the LLM as a strict reviewer (claim-by-claim entailment). Falls back
-        to a deterministic lexical-overlap estimate if the LLM call or JSON
-        parsing fails, so the layer never breaks the response.
+    async def review_grounding_stream(
+        self,
+        answer: str,
+        evidence: list,
+        modes_used: list[str],
+        instructions: AgentInstructions,
+    ):
+        """
+        Same check as `review_grounding`, but yields progress while it runs:
+
+          ("partial", report)  each time another answer line has been checked
+          ("final", report)    once, at the end
+
+        The reviewer answers one short line per answer line ("L7 ok"), so the
+        UI can show source links line by line instead of waiting for the end.
+        Falls back to a deterministic lexical-overlap estimate if the LLM call
+        fails or its output cannot be read, so the layer never breaks.
         """
         answer = (answer or "").strip()
-        context = self._build_context(evidence, instructions)
+        context = self._build_context(evidence, instructions, purpose="review")
 
         # No answer, or nothing was retrieved → nothing to ground against.
         if not answer:
-            return GroundingReport(summary="No answer to review.", method="none")
+            yield "final", GroundingReport(summary="No answer to review.", method="none")
+            return
         if not context.strip():
-            return GroundingReport(
+            yield "final", GroundingReport(
                 grounding_score=0.0,
                 grounded_percentage=0,
                 total_claims=0,
@@ -270,10 +294,42 @@ class AnswerGenerationService:
                 summary="No document evidence was retrieved; the answer is not grounded in sources.",
                 method="none",
             )
+            return
+
+        answer_lines = answer.split("\n")
+        claims: list[GroundingClaim] = []
+        seen_lines: set[int] = set()
+        summary = ""
+        raw = ""
+        buffer = ""
+
+        def take(line_text: str) -> bool:
+            nonlocal summary
+            parsed = self._parse_verdict_line(line_text, answer_lines)
+            if parsed == "summary":
+                summary = line_text.split(":", 1)[1].strip() if ":" in line_text else ""
+                return False
+            if parsed is None or parsed["line"] in seen_lines:
+                return False
+            seen_lines.add(parsed["line"])
+            claims.append(self._claim_from_verdict(parsed, answer_lines))
+            return True
 
         try:
-            raw = await self._call_reviewer(answer, context)
-            report = self._parse_grounding(raw)
+            async for chunk in self._stream_reviewer(answer, context):
+                raw += chunk
+                buffer += chunk
+                while "\n" in buffer:
+                    line_text, buffer = buffer.split("\n", 1)
+                    if take(line_text):
+                        yield "partial", self._report_from_claims(claims, "", method="partial")
+            if buffer.strip():
+                take(buffer)
+
+            report = (
+                self._report_from_claims(claims, summary, method="llm")
+                if claims else self._parse_grounding(raw, answer)   # older JSON-style output
+            )
             if report is not None:
                 logger.info(
                     "grounding_review_ok",
@@ -282,7 +338,8 @@ class AnswerGenerationService:
                     total=report.total_claims,
                     method="llm",
                 )
-                return report
+                yield "final", report
+                return
         except Exception as exc:
             logger.warning("grounding_review_llm_failed", error=str(exc))
 
@@ -293,20 +350,32 @@ class AnswerGenerationService:
             score=report.grounding_score,
             method="lexical",
         )
-        return report
+        yield "final", report
 
-    async def _call_reviewer(self, answer: str, context: str) -> str:
-        """Run the reviewer LLM pass and return its raw text output."""
+    async def _stream_reviewer(self, answer: str, context: str):
+        """Run the reviewer LLM pass, yielding its text as it is written."""
         user_message = build_grounding_user_message(answer, context)
+        max_tokens = min(self._max_tokens, 8000)
 
         if self._provider in ("anthropic", "azure_anthropic"):
-            response = await self._anthropic_client.messages.create(
+            text = ""
+            async with self._anthropic_client.messages.stream(
                 model=self._model,
-                max_tokens=min(self._max_tokens, 2000),
+                max_tokens=max_tokens,
                 system=GROUNDING_SYSTEM_PROMPT,
                 messages=[{"role": "user", "content": user_message}],
+            ) as stream:
+                async for chunk in stream.text_stream:
+                    text += chunk
+                    yield chunk
+                final = await stream.get_final_message()
+            logger.info(
+                "grounding_reviewer_raw",
+                stop_reason=final.stop_reason,
+                output_tokens=final.usage.output_tokens,
+                ending=text[-150:],
             )
-            return self._extract_text_from_content(response.content)
+            return
 
         response = await self._client.chat.completions.create(
             model=self._model,
@@ -314,9 +383,61 @@ class AnswerGenerationService:
                 {"role": "system", "content": GROUNDING_SYSTEM_PROMPT},
                 {"role": "user", "content": user_message},
             ],
-            max_completion_tokens=min(self._max_tokens, 2000),
+            max_completion_tokens=max_tokens,
+            stream=True,
         )
-        return response.choices[0].message.content or ""
+        async for chunk in response:
+            if chunk.choices and chunk.choices[0].delta.content:
+                yield chunk.choices[0].delta.content
+
+    # Reviewer output, one line per checked answer line:
+    #   "L7 ok"   |   "L9 no | finishes in seconds"   |   "SUMMARY: ..."
+    _VERDICT_RE = re.compile(
+        r"^\s*[-*]?\s*L?\s*(\d+)\s*[:|.)\-]?\s*(ok|yes|true|no|false)\b\s*[|:\-–—]?\s*(.*)$",
+        re.IGNORECASE,
+    )
+
+    @classmethod
+    def _parse_verdict_line(cls, text: str, answer_lines: list[str]):
+        """One reviewer output line → {"line", "ok", "missing"}, "summary", or None."""
+        stripped = text.strip().strip("`")
+        if stripped.upper().startswith("SUMMARY"):
+            return "summary"
+        match = cls._VERDICT_RE.match(stripped)
+        if not match:
+            return None
+        line_no = int(match.group(1))
+        if not (1 <= line_no <= len(answer_lines)) or not answer_lines[line_no - 1].strip():
+            return None
+        ok = match.group(2).lower() in ("ok", "yes", "true")
+        return {"line": line_no, "ok": ok, "missing": "" if ok else match.group(3).strip()}
+
+    @classmethod
+    def _claim_from_verdict(cls, verdict: dict, answer_lines: list[str]) -> GroundingClaim:
+        line = answer_lines[verdict["line"] - 1]
+        text = cls._plain_line(line)
+        return GroundingClaim(
+            claim=text if verdict["ok"] else (verdict["missing"] or text),
+            supported=verdict["ok"],
+            evidence_refs=[],
+            answer_quote=line.strip(),
+        )
+
+    @classmethod
+    def _report_from_claims(cls, claims: list[GroundingClaim], summary: str, method: str) -> GroundingReport:
+        total = len(claims)
+        supported = sum(1 for c in claims if c.supported)
+        score = (supported / total) if total else 0.0
+        return GroundingReport(
+            grounding_score=round(score, 4),
+            grounded_percentage=round(score * 100),
+            total_claims=total,
+            supported_claims=supported,
+            verdict=cls._verdict(score, total),
+            summary=summary or cls._default_summary(score, supported, total),
+            claims=list(claims),
+            method=method,
+        )
 
     @staticmethod
     def _extract_json(text: str) -> dict | None:
@@ -336,13 +457,21 @@ class AnswerGenerationService:
             return None
 
     @classmethod
-    def _parse_grounding(cls, raw: str) -> GroundingReport | None:
-        """Convert the reviewer's JSON into a GroundingReport."""
+    def _parse_grounding(cls, raw: str, answer: str = "") -> GroundingReport | None:
+        """Convert the reviewer's JSON into a GroundingReport.
+
+        The reviewer points to the answer line each claim came from ("line");
+        that line's text is kept as `answer_quote` so the UI can show the
+        claim's source links next to it.
+        """
+        answer_lines = answer.split("\n") if answer else []
         data = cls._extract_json(raw)
         if not isinstance(data, dict):
             return None
 
         raw_claims = data.get("claims")
+        if not isinstance(raw_claims, list):
+            raw_claims = cls._line_verdicts_to_claims(data.get("lines"), answer_lines)
         if not isinstance(raw_claims, list):
             return None
 
@@ -361,7 +490,8 @@ class AnswerGenerationService:
                     claim=text,
                     supported=bool(item.get("supported", False)),
                     evidence_refs=[str(r) for r in refs],
-                    note=str(item.get("note", "")).strip(),
+                    note=str(item.get("note", "") or "").strip(),
+                    answer_quote=cls._quote_for(item, answer_lines),
                 )
             )
 
@@ -379,6 +509,51 @@ class AnswerGenerationService:
             claims=claims,
             method="llm",
         )
+
+    @staticmethod
+    def _plain_line(line: str) -> str:
+        """Answer line without markdown symbols (for display as a claim)."""
+        text = re.sub(r"^\s*(?:[-*+]|\d+[.)])\s+", "", line)        # bullet / number
+        text = text.replace("**", "").replace("__", "").replace("`", "")
+        text = re.sub(r"\s*\|\s*", " — ", text.strip().strip("|")).strip(" —")
+        return text.strip()
+
+    @classmethod
+    def _line_verdicts_to_claims(cls, lines, answer_lines: list[str]) -> list[dict] | None:
+        """Turn per-line verdicts ({"line", "ok", "refs", "missing"}) into claim dicts."""
+        if not isinstance(lines, list):
+            return None
+        claims: list[dict] = []
+        for item in lines:
+            if not isinstance(item, dict):
+                continue
+            try:
+                line_no = int(item.get("line"))
+            except (TypeError, ValueError):
+                continue
+            if not (1 <= line_no <= len(answer_lines)) or not answer_lines[line_no - 1].strip():
+                continue
+            ok = bool(item.get("ok", False))
+            text = cls._plain_line(answer_lines[line_no - 1])
+            missing = str(item.get("missing", "") or "").strip()
+            claims.append({
+                "claim": missing if (not ok and missing) else text,
+                "supported": ok,
+                "line": line_no,
+                "evidence_refs": item.get("refs") or [],
+            })
+        return claims
+
+    @staticmethod
+    def _quote_for(item: dict, answer_lines: list[str]) -> str:
+        """Text of the answer line the claim came from (or the reviewer's own quote)."""
+        try:
+            line_no = int(item.get("line"))
+        except (TypeError, ValueError):
+            line_no = 0
+        if 1 <= line_no <= len(answer_lines) and answer_lines[line_no - 1].strip():
+            return answer_lines[line_no - 1].strip()
+        return str(item.get("answer_quote", "") or "").strip()
 
     def _lexical_grounding(self, answer: str, context: str) -> GroundingReport:
         """
@@ -403,6 +578,7 @@ class AnswerGenerationService:
                     supported=supported,
                     evidence_refs=[],
                     note=f"lexical overlap {overlap:.0%}",
+                    answer_quote=sentence,
                 )
             )
 
@@ -457,9 +633,19 @@ class AnswerGenerationService:
         return cleaned.strip()
     # ── Context builder ───────────────────────────────────────────────────────
 
-    def _build_context(self, evidence: list, instructions: AgentInstructions) -> str:
-        """Serialise evidence objects into a text context block."""
+    def _build_context(
+        self,
+        evidence: list,
+        instructions: AgentInstructions,
+        purpose: str = "answer",
+    ) -> str:
+        """Serialise evidence objects into a text context block.
+
+        purpose: "answer" (text Claude answers from) or "review" (text the
+        grounding reviewer checks against) — only used for logging.
+        """
         primary_evidence, supporting_evidence = self._prioritize_evidence(evidence)
+        supporting_before_drop = list(supporting_evidence)
 
         # A sufficiently populated Neo4j relationship result answers the
         # relationship question directly. Do not dilute it with unrelated
@@ -478,29 +664,107 @@ class AnswerGenerationService:
         )
 
         parts: list[str] = []
+        stats: dict[str, int] = {}
 
         if primary_evidence:
             parts.append("### PRIMARY GRAPH EVIDENCE (Highest Priority)")
             parts.append("This evidence comes directly from the structured PRA knowledge graph. Prefer these facts for questions about relationships and definitions.")
-            self._format_evidence(primary_evidence, parts)
+            self._format_evidence(primary_evidence, parts, stats)
 
         if supporting_evidence:
             parts.append("\n### SUPPORTING EVIDENCE (Lower Priority)")
             parts.append("This evidence is from keyword or semantic searches. Use it for supplementary details or when primary evidence is absent.")
-            self._format_evidence(supporting_evidence, parts)
+            self._format_evidence(supporting_evidence, parts, stats)
 
-        return "\n".join(parts)
+        context = "\n".join(parts)
+        self._log_context(evidence, supporting_before_drop, supporting_evidence, stats, context, purpose)
+        return context
 
-    def _format_evidence(self, evidence_list: list, parts: list[str]) -> None:
-        """Helper to format a list of evidence into text parts."""
+    # ── Measurement: what actually reaches Claude ─────────────────────────────
+
+    def _log_context(
+        self,
+        evidence: list,
+        supporting_before_drop: list,
+        supporting_kept: list,
+        stats: dict[str, int],
+        context: str,
+        purpose: str,
+    ) -> None:
+        """Log what the search FOUND vs what was actually SENT to Claude.
+
+        Measurement only — does not change the answer. Compare *_found with
+        *_sent to see evidence that was retrieved but never reached Claude.
+        Set LOG_LLM_CONTEXT=true in backend/.env to also save the full text
+        sent to Claude under backend/logs/llm_context/.
+        """
+        graph = [ev for ev in evidence if isinstance(ev, Neo4jGraphEvidence)]
+        fts = [ev for ev in evidence if isinstance(ev, FtsEvidence)]
+        sim = [ev for ev in evidence if isinstance(ev, SimilarityEvidence)]
+        logger.info(
+            "llm_context_built",
+            purpose=purpose,
+            graph_entities_found=sum(len(ev.results) for ev in graph),
+            graph_relationships_found=sum(len(ev.relationships) for ev in graph),
+            graph_entities_sent=stats.get("graph_entities_sent", 0),
+            graph_relationships_sent=stats.get("graph_relationships_sent", 0),
+            fts_hits_found=sum(len(ev.hits) for ev in fts),
+            fts_hits_sent=stats.get("fts_hits_sent", 0),
+            similarity_hits_found=sum(len(ev.hits) for ev in sim),
+            similarity_hits_sent=stats.get("similarity_hits_sent", 0),
+            supporting_dropped=len(supporting_before_drop) > len(supporting_kept),
+            context_chars=len(context),
+            context_tokens_est=len(context) // 4,
+        )
+        if get_settings().log_llm_context:
+            self._dump_context(context, purpose)
+
+    @staticmethod
+    def _dump_context(context: str, purpose: str) -> None:
+        """Save the exact text sent to Claude (debugging / before-after comparisons)."""
+        try:
+            from datetime import datetime
+            from pathlib import Path
+
+            folder = Path(__file__).resolve().parents[3] / "logs" / "llm_context"
+            folder.mkdir(parents=True, exist_ok=True)
+            path = folder / f"{datetime.now():%Y%m%d_%H%M%S_%f}_{purpose}.txt"
+            path.write_text(context, encoding="utf-8")
+            logger.info("llm_context_saved", path=str(path))
+        except Exception as exc:  # never break an answer because of logging
+            logger.warning("llm_context_save_failed", error=str(exc))
+
+    def _format_evidence(
+        self,
+        evidence_list: list,
+        parts: list[str],
+        stats: dict[str, int] | None = None,
+    ) -> None:
+        """Helper to format a list of evidence into text parts.
+
+        stats (optional) counts what is written, for the llm_context_built log.
+        """
+        stats = stats if stats is not None else {}
+
+        def count(key: str, n: int = 1) -> None:
+            stats[key] = stats.get(key, 0) + n
+
         for ev in evidence_list:
-            if isinstance(ev, SparqlEvidence) and ev.triple_count > 0:
+            if isinstance(ev, Neo4jGraphEvidence) and ev.summary:
+                # PRA map / domain profiles: already a compact, readable summary.
+                parts.append("=== Neo4j Graph Results (PRA structure) ===")
+                parts.append(ev.summary)
+                parts.append("")
+                count("graph_entities_sent", len(ev.results))
+
+            elif isinstance(ev, SparqlEvidence) and ev.triple_count > 0:
                 parts.append("=== SPARQL CONSTRUCT Results (ontology sub-graph) ===")
                 for t in ev.triples[:60]:  # cap to avoid token overflow
                     parts.append(f"  <{t.subject}> <{t.predicate}> {t.obj} .")
 
             elif isinstance(ev, FtsEvidence) and ev.hits:
                 parts.append(f"=== Full-Text Search Results (term: {ev.search_term}) ===")
+                count("fts_hits_sent", len(ev.hits))
                 for hit in ev.hits:
                     parts.append(f"  URI: {hit.uri}")
                     parts.append(f"  Label: {hit.label}")
@@ -510,6 +774,7 @@ class AnswerGenerationService:
 
             elif isinstance(ev, SimilarityEvidence) and ev.hits:
                 parts.append("=== Similarity Search Results ===")
+                count("similarity_hits_sent", len(ev.hits))
                 for hit in ev.hits:
                     parts.append(f"  URI: {hit.uri}")
                     parts.append(f"  Label: {hit.label}")
@@ -520,6 +785,10 @@ class AnswerGenerationService:
             elif isinstance(ev, Neo4jGraphEvidence) and ev.relationships:
                 parts.append("=== Neo4j Graph Results (nodes and relationships) ===")
                 # Cap to avoid token overflow
+                count("graph_relationships_sent", len(ev.relationships[:30]))
+                count("graph_entities_sent", len(
+                    {r.start_node for r in ev.relationships[:30]} | {r.end_node for r in ev.relationships[:30]}
+                ))
                 for rel in ev.relationships[:30]:
                     # Find the start and end nodes from the results list
                     start_node = next((n for n in ev.results if n.element_id == rel.start_node), None)
@@ -534,6 +803,27 @@ class AnswerGenerationService:
                     self._format_neo4j_node(end_node, rel.end_node, parts)
                     parts.append("")
 
+            elif isinstance(ev, Neo4jGraphEvidence) and ev.results:
+                # Graph queries such as "functions of a domain" return the
+                # entities without relationship objects. Previously these were
+                # silently dropped, so Claude never saw them.
+                shown = ev.results[:self.MAX_GRAPH_ENTITIES]
+                parts.append("=== Neo4j Graph Results (entities) ===")
+                count("graph_entities_sent", len(shown))
+                groups: dict[str, list] = {}
+                for node in shown:
+                    kind = next((lbl for lbl in node.labels if lbl != "Resource"), "Entity")
+                    groups.setdefault(kind, []).append(node)
+                for kind, nodes in groups.items():
+                    parts.append(f"{kind}:")
+                    for node in nodes:
+                        name = self._node_name(node)
+                        description = self._human_value(node.properties.get("description"))
+                        parts.append(f"  - {name}" + (f": {description[:300]}" if description else ""))
+                    parts.append("")
+                if len(ev.results) > len(shown):
+                    parts.append(f"  (+{len(ev.results) - len(shown)} more not shown)")
+
     @staticmethod
     def _format_neo4j_node(node, fallback_id: str, parts: list[str]) -> None:
         """Expose human-readable Neo4j properties before technical identifiers."""
@@ -542,13 +832,21 @@ class AnswerGenerationService:
             return
 
         properties = node.properties
-        label = AnswerGenerationService._human_value(properties.get("label"))
+        label = AnswerGenerationService._node_name(node)
         description = AnswerGenerationService._human_value(properties.get("description"))
 
         parts.append(f"  label: {label or fallback_id}")
         if description:
             parts.append(f"  description: {description}")
         parts.append(f"  element_id: {node.element_id}")
+
+    @staticmethod
+    def _node_name(node) -> str:
+        """Readable name of a graph node: `name` (PRA schema), then `label`, then its id."""
+        props = node.properties or {}
+        return (AnswerGenerationService._human_value(props.get("name"))
+                or AnswerGenerationService._human_value(props.get("label"))
+                or str(node.element_id))
 
     def _prioritize_evidence(self, evidence: list) -> tuple[list, list]:
         """Sort evidence into primary (graph) and supporting (search) buckets."""

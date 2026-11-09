@@ -102,6 +102,12 @@ async def create_tables() -> None:
             "ALTER TABLE retrieval_log "
             "ADD COLUMN IF NOT EXISTS neo4j_count INTEGER NOT NULL DEFAULT 0"
         ))
+        # Evidence check (grounding report) saved with each assistant answer
+        # so it is still shown when a past conversation is reopened.
+        await conn.execute(text(
+            "ALTER TABLE conversation_turns "
+            "ADD COLUMN IF NOT EXISTS grounding JSONB"
+        ))
 
     logger.info("db_tables_created")
 

@@ -1,11 +1,13 @@
-﻿import { memo, useState } from "react";
-import { Copy, Check, HelpCircle, RotateCcw, ShieldCheck, ChevronDown } from "lucide-react";
+﻿import { Children, cloneElement, isValidElement, memo, useMemo, useState } from "react";
+import type { ReactElement, ReactNode } from "react";
+import { Copy, Check, HelpCircle, RotateCcw, FileText, AlertTriangle } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import type { Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import type { ChatResponse } from "../api";
-import type { GroundingReport } from "../api";
 import { MermaidDiagram } from "./MermaidDiagram";
+import { buildChipLayout, shortDocName, warningsInRange } from "./inlineSources";
+import type { ChipGroup, ChipLayout, Claim } from "./inlineSources";
 
 interface UserBubbleProps { text: string; }
 interface BotBubbleProps { msg: ChatResponse; streaming?: boolean; }
@@ -30,62 +32,62 @@ function IntentBadge({ intent }: { intent: string }) {
   );
 }
 
-// ── Grounding / output review badge ─────────────────────────────────────────
 
-const GROUNDING_CONFIG: Record<string, { label: string; color: string }> = {
-  high:       { label: "Well grounded",   color: "#16a34a" },
-  moderate:   { label: "Partly grounded", color: "#d97706" },
-  low:        { label: "Weakly grounded", color: "#dc2626" },
-  unverified: { label: "Unverified",      color: "#6b7280" },
-};
+// ── Inline source chips (next to each paragraph / bullet / table row) ─────────
 
-function GroundingBadge({ report }: { report: GroundingReport }) {
-  const [open, setOpen] = useState(false);
-  const cfg = GROUNDING_CONFIG[report.verdict] ?? GROUNDING_CONFIG.unverified;
-  const pct = Math.round(report.grounded_percentage);
+function claimList(claims: string[]): string {
+  return claims.map((c) => `• ${c}`).join("\n");
+}
 
+function covers(lines: string[], lineCount: number): string {
+  const head = lineCount > 1 ? `Supports these ${lineCount} lines:` : "Supports:";
+  return `${head}\n${claimList(lines)}`;
+}
+
+// One row of chips for a group of consecutive lines that share the same documents.
+function InlineSources({ group, block }: { group: ChipGroup; block?: boolean }) {
+  const { docs, supported, kb, unsupported, lineCount } = group;
+  if (docs.length === 0 && kb.length === 0 && unsupported.length === 0) return null;
   return (
-    <div className="grounding">
-      <button
-        className="grounding__badge"
-        onClick={() => setOpen((o) => !o)}
-        title={report.summary}
-        style={{ ["--grounding-color" as string]: cfg.color }}
-      >
-        <ShieldCheck size={12} />
-        <span className="grounding__pct">{pct}% evidence-based</span>
-        <span className="grounding__verdict">· {cfg.label}</span>
-        <span className="grounding__track">
-          <span className="grounding__fill" style={{ width: `${pct}%`, background: cfg.color }} />
-        </span>
-        <ChevronDown
-          size={12}
-          style={{ transform: open ? "rotate(180deg)" : "none", transition: "transform .2s" }}
-        />
-      </button>
-
-      {open && (
-        <div className="grounding__details">
-          {report.summary && <p className="grounding__summary">{report.summary}</p>}
-          <p className="grounding__stat">
-            {report.supported_claims} of {report.total_claims} claims supported
-            {report.method === "lexical" && " · estimated"}
-          </p>
-          {report.claims.length > 0 && (
-            <ul className="grounding__claims">
-              {report.claims.map((c, i) => (
-                <li key={i} className={c.supported ? "is-supported" : "is-unsupported"}>
-                  <span className="grounding__mark">{c.supported ? "✓" : "✕"}</span>
-                  <span>{c.claim}</span>
-                </li>
-              ))}
-            </ul>
-          )}
-        </div>
+    <span className={`inline-sources${block ? " inline-sources--block" : ""}`}>
+      {block && (docs.length > 0 || kb.length > 0) && <span className="inline-sources__label">Sources</span>}
+      {docs.map((doc) =>
+        doc.url ? (
+          <a
+            key={doc.name}
+            className="inline-source"
+            href={doc.url}
+            target="_blank"
+            rel="noopener noreferrer"
+            title={`${doc.name}\n\n${covers(supported, lineCount)}`}
+          >
+            <FileText size={10} /> {shortDocName(doc.name)}
+          </a>
+        ) : (
+          <span
+            key={doc.name}
+            className="inline-source inline-source--nolink"
+            title={`${doc.name} (no PDF copy)\n\n${covers(supported, lineCount)}`}
+          >
+            <FileText size={10} /> {shortDocName(doc.name)}
+          </span>
+        ),
       )}
-    </div>
+      {docs.length === 0 && kb.length > 0 && (
+        <span className="inline-source inline-source--nolink" title={`Found in the PRA knowledge base:\n${claimList(kb)}`}>
+          <Check size={10} /> PRA knowledge base
+        </span>
+      )}
+      {unsupported.length > 0 && (
+        <span className="inline-source inline-source--warn" title={`Not found in the sources:\n${claimList(unsupported)}`}>
+          <AlertTriangle size={10} /> Not in sources
+        </span>
+      )}
+    </span>
   );
 }
+
+type HastNode = { type?: string; tagName?: string; position?: { start: { line: number }; end: { line: number } }; children?: HastNode[] };
 
 // ── User bubble ───────────────────────────────────────────────────────────────
 
@@ -114,6 +116,44 @@ export const BotBubble = memo(function BotBubble({ msg, streaming }: BotBubblePr
     setTimeout(() => setCopied(false), 2000);
   };
 
+  // Source chips are added as soon as the evidence check arrives.
+  // While the check runs, the backend sends the lines checked so far
+  // (method "partial"): their chips appear right away, the % comes at the end.
+  const partial = msg.grounding?.method === "partial";
+  const reviewing = (Boolean(msg.reviewing) && !msg.grounding) || (partial && Boolean(streaming));
+  // Chips appear while the answer is written (from `sources_map`), are confirmed
+  // or flagged by the evidence check, and are grouped per block by source.
+  const checked = !!msg.grounding && msg.grounding.method !== "none";
+  const answerComplete = !streaming || Boolean(msg.reviewing) || !!msg.grounding;
+  const layout: ChipLayout = useMemo(
+    () => isClarification ? { anchors: new Map(), warnings: new Map() } : buildChipLayout(msg.answer, {
+      claims: checked ? (msg.grounding!.claims as Claim[]) : undefined,
+      sources: msg.sources_map ?? null,
+      complete: answerComplete,
+    }),
+    [isClarification, msg.answer, msg.grounding, checked, msg.sources_map, answerComplete],
+  );
+  const EMPTY: ChipGroup = { docs: [], supported: [], kb: [], unsupported: [], lineCount: 0 };
+  // "Not in sources" on exactly the lines it concerns.
+  const warningsFor = (node: HastNode | undefined, endLine?: number) => {
+    if (!node?.position) return null;
+    const w = warningsInRange(layout, node.position.start.line, endLine ?? node.position.end.line);
+    return w.length ? <InlineSources group={{ ...EMPTY, unsupported: w }} /> : null;
+  };
+  // Source chips of a block that ends here (paragraph: inline; list/table/diagram: row below).
+  const blockChips = (node: HastNode | undefined, kinds: string[], block: boolean) => {
+    if (!node?.position) return null;
+    const { start, end } = { start: node.position.start.line, end: node.position.end.line };
+    for (let n = end; n >= start; n--) {
+      const anchor = layout.anchors.get(n);
+      // A list/table/diagram must be the outer block itself (not a nested list inside it).
+      if (anchor && kinds.includes(anchor.kind) && (!block || anchor.start === start)) {
+        return <InlineSources group={anchor.group} block={block} />;
+      }
+    }
+    return null;
+  };
+
   // Render ```mermaid fenced blocks as downloadable pictures; all other
   // code blocks fall through to the default rendering.
   const markdownComponents: Components = {
@@ -124,8 +164,43 @@ export const BotBubble = memo(function BotBubble({ msg, streaming }: BotBubblePr
       const cls =
         child && child.type === "element" ? child.properties?.className : undefined;
       const isMermaid = Array.isArray(cls) && cls.includes("language-mermaid");
-      if (isMermaid) return <>{children}</>;
+      if (isMermaid) return <>{children}{blockChips(node as HastNode, ["code"], true)}</>;
       return <pre>{children}</pre>;
+    },
+    p({ node, children }) {
+      return <p>{children}{warningsFor(node as HastNode)}{blockChips(node as HastNode, ["paragraph"], false)}</p>;
+    },
+    ul({ node, children }) {
+      return <><ul>{children}</ul>{blockChips(node as HastNode, ["list"], true)}</>;
+    },
+    ol({ node, children, start }) {
+      return <><ol start={start}>{children}</ol>{blockChips(node as HastNode, ["list"], true)}</>;
+    },
+    table({ node, children }) {
+      return <><table>{children}</table>{blockChips(node as HastNode, ["table"], true)}</>;
+    },
+    li({ node, children, className }) {
+      const n = node as HastNode;
+      const kids = n?.children ?? [];
+      // In "loose" lists the text sits in a <p>, which shows the chips itself.
+      if (kids.some((k) => k.tagName === "p")) return <li className={className}>{children}</li>;
+      // Only this item's own lines, not its nested sub-list; chips go before the sub-list.
+      const nested = kids.find((k) => k.tagName === "ul" || k.tagName === "ol");
+      const end = nested?.position ? nested.position.start.line - 1 : undefined;
+      const chips = warningsFor(n, end);
+      if (!chips) return <li className={className}>{children}</li>;
+      const items = Children.toArray(children);
+      const at = items.findIndex((c) => isValidElement(c) && (c.type === "ul" || c.type === "ol"));
+      if (at === -1) return <li className={className}>{items}{chips}</li>;
+      return <li className={className}>{items.slice(0, at)}{chips}{items.slice(at)}</li>;
+    },
+    tr({ node, children }) {
+      const chips = warningsFor(node as HastNode);
+      if (!chips) return <tr>{children}</tr>;
+      const cells = Children.toArray(children).filter(isValidElement) as ReactElement<{ children?: ReactNode }>[];
+      if (cells.length === 0) return <tr>{children}</tr>;
+      const last = cells[cells.length - 1];
+      return <tr>{cells.slice(0, -1)}{cloneElement(last, undefined, last.props.children, chips)}</tr>;
     },
     code({ className, children, ...props }) {
       const match = /language-mermaid/.test(className || "");
@@ -177,7 +252,7 @@ export const BotBubble = memo(function BotBubble({ msg, streaming }: BotBubblePr
             <div className="warning-banner">⚠️ {msg.warning}</div>
           )}
           <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>{msg.answer}</ReactMarkdown>
-          {streaming && !isClarification && <span className="streaming-cursor" aria-hidden="true" />}
+          {streaming && !reviewing && !msg.grounding && !isClarification && <span className="streaming-cursor" aria-hidden="true" />}
 
           {/* ── Meta row (copy) ─────────────────────────────────────────── */}
           {!isClarification && (
@@ -189,10 +264,7 @@ export const BotBubble = memo(function BotBubble({ msg, streaming }: BotBubblePr
           )}
         </div>
 
-        {/* ── Output review: % grounded in evidence ───────────────────────── */}
-        {!isClarification && !streaming && msg.grounding && msg.grounding.method !== "none" && (
-          <GroundingBadge report={msg.grounding} />
-        )}
+        
       </div>
     </div>
   );
